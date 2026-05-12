@@ -513,20 +513,25 @@ class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
         STATIC_URL="/static/",
         TEMPLATES=locmem_templates({"page.html": ORPHAN_USE_MEDIA}, debug=True),
     )
-    def test_raises_in_debug_mode(self):
-        from django.template import TemplateSyntaxError
-
-        with self.assertRaises(TemplateSyntaxError):
-            render_to_string("page.html")
+    def test_warns_and_renders_inline_in_debug(self):
+        with self.assertWarns(UserWarning) as cm:
+            html = render_to_string("page.html")
+        self.assertIn("Hello", html)
+        self.assertInHTML(
+            '<link href="/static/orphan/style.css" rel="stylesheet">', html
+        )
+        self.assertIn("include_media", str(cm.warning))
 
     @override_settings(
         STATIC_URL="/static/",
         TEMPLATES=locmem_templates({"page.html": ORPHAN_USE_MEDIA}, debug=False),
     )
-    def test_silent_in_production(self):
+    def test_renders_inline_silently_in_production(self):
         html = render_to_string("page.html")
-        self.assertInHTML("<div>Hello</div>", html)
-        self.assertNotIn("orphan/style.css", html)
+        self.assertIn("Hello", html)
+        self.assertInHTML(
+            '<link href="/static/orphan/style.css" rel="stylesheet">', html
+        )
 
     @override_settings(
         STATIC_URL="/static/",
@@ -538,12 +543,11 @@ class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
             debug=True,
         ),
     )
-    def test_only_include_raises_in_debug(self):
+    def test_only_include_warns_in_debug(self):
         """use_media inside {% include '...' only %} behaves like an orphan."""
-        from django.template import TemplateSyntaxError
-
-        with self.assertRaises(TemplateSyntaxError):
-            render_to_string("page.html")
+        with self.assertWarns(UserWarning):
+            html = render_to_string("page.html")
+        self.assertIn("only/style.css", html)
 
     @override_settings(
         STATIC_URL="/static/",
@@ -555,9 +559,9 @@ class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
             debug=False,
         ),
     )
-    def test_only_include_silent_in_production(self):
+    def test_only_include_renders_inline_silently_in_production(self):
         html = render_to_string("page.html")
-        self.assertNotIn("only/style.css", html)
+        self.assertIn("only/style.css", html)
 
 
 @override_settings(STATIC_URL="/static/")

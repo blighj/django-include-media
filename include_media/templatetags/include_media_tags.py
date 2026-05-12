@@ -1,3 +1,5 @@
+import warnings
+
 from django import template
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
@@ -108,27 +110,18 @@ class UseMediaNode(template.Node):
         self.js_expr = js_expr
         self.attrs = attrs or {}  # {attr_name: FilterExpression}
 
-    def render(self, context):
-        collector = context.get(_COLLECTOR_KEY)
-        if collector is None:
-            if _get_debug(context):
-                raise template.TemplateSyntaxError(
-                    "{% use_media %} must be rendered inside a {% include_media %} "
-                    "block. Check that {% include_media %} is present in the base "
-                    "template and that this template is not included with 'only'."
-                )
-            return ""
-
+    def _build_media(self, context):
+        """Resolve expressions and return a Media object, or None if invalid."""
         if self.media_expr is not None:
             media = self.media_expr.resolve(context)
             if isinstance(media, Media):
-                collector.add(media)
-            elif _get_debug(context):
+                return media
+            if _get_debug(context):
                 raise template.TemplateSyntaxError(
                     f"{{% use_media %}} expected a Media object, got "
                     f"{type(media).__name__}. Did you forget .media?"
                 )
-            return ""
+            return None
 
         resolved_attrs = {k: v.resolve(context) for k, v in self.attrs.items()}
         css = {}
@@ -156,7 +149,27 @@ class UseMediaNode(template.Node):
                 )
             js = [js_val]
 
-        collector.add(Media(css=css, js=js))
+        return Media(css=css, js=js)
+
+    def render(self, context):
+        collector = context.get(_COLLECTOR_KEY)
+        if collector is None:
+            if _get_debug(context):
+                warnings.warn(
+                    "{% use_media %} rendered outside {% include_media %}: assets "
+                    "are being output inline. Add {% include_media %} to your base "
+                    "template to collect assets into <head>.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            media = self._build_media(context)
+            if media is None:
+                return ""
+            return "".join(list(media.render_css()) + list(media.render_js()))
+
+        media = self._build_media(context)
+        if media is not None:
+            collector.add(media)
         return ""
 
 
