@@ -678,8 +678,8 @@ class ErrorHandlingTests(SimpleTestCase):
             debug=True,
         ),
     )
-    def test_non_media_positional_arg_raises_in_debug(self):
-        """{% use_media form %} (forgetting .media) raises in debug mode."""
+    def test_non_media_positional_arg_raises(self):
+        """{% use_media form %} (forgetting .media) raises."""
         from django.template import TemplateSyntaxError
 
         with self.assertRaises(TemplateSyntaxError):
@@ -699,8 +699,9 @@ class ErrorHandlingTests(SimpleTestCase):
             debug=False,
         ),
     )
-    def test_non_media_positional_arg_silent_in_production(self):
-        """{% use_media form %} is a silent no-op in production."""
-        html = render_to_string("page.html", {"form": ContactForm()})
-        self.assertNotIn("form/form.css", html)
-        self.assertNotIn("form/form.js", html)
+    def test_non_media_positional_arg_raises_in_production(self):
+        """{% use_media form %} (forgetting .media) raises regardless of debug mode."""
+        from django.template import TemplateSyntaxError
+
+        with self.assertRaises(TemplateSyntaxError):
+            render_to_string("page.html", {"form": ContactForm()})
