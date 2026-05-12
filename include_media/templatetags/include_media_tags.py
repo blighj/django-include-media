@@ -12,15 +12,6 @@ register = template.Library()
 _COLLECTOR_KEY = "_include_media_collector"
 
 
-def _get_debug(context):
-    try:
-        return context.template.engine.debug
-    except AttributeError:
-        from django.template import Engine
-
-        return Engine.get_default().debug
-
-
 class _MediaCollector:
     """Mutable accumulator shared by reference across all context frames.
 
@@ -114,14 +105,12 @@ class UseMediaNode(template.Node):
         """Resolve expressions and return a Media object, or None if invalid."""
         if self.media_expr is not None:
             media = self.media_expr.resolve(context)
-            if isinstance(media, Media):
-                return media
-            if _get_debug(context):
+            if not isinstance(media, Media):
                 raise template.TemplateSyntaxError(
                     f"{{% use_media %}} expected a Media object, got "
                     f"{type(media).__name__}. Did you forget .media?"
                 )
-            return None
+            return media
 
         resolved_attrs = {k: v.resolve(context) for k, v in self.attrs.items()}
         css = {}
@@ -154,7 +143,7 @@ class UseMediaNode(template.Node):
     def render(self, context):
         collector = context.get(_COLLECTOR_KEY)
         if collector is None:
-            if _get_debug(context):
+            if context.template.engine.debug:
                 warnings.warn(
                     "{% use_media %} rendered outside {% include_media %}: assets "
                     "are being output inline. Add {% include_media %} to your base "
@@ -163,13 +152,10 @@ class UseMediaNode(template.Node):
                     stacklevel=2,
                 )
             media = self._build_media(context)
-            if media is None:
-                return ""
             return "".join(list(media.render_css()) + list(media.render_js()))
 
         media = self._build_media(context)
-        if media is not None:
-            collector.add(media)
+        collector.add(media)
         return ""
 
 
