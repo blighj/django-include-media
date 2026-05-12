@@ -1,0 +1,12 @@
+include_media.egg-info/
+
+MANIFEST.in
+*~
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.tox/
+.venv/
+venv/
