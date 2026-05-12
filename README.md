@@ -1,9 +1,8 @@
-# django-include-media
+# Django include media
 
-A Django third-party app that allows templates and components to declare asset
-requirements using Django's `forms.Media` object, with automatic collection and
-deduplication, outputting assets into `<head>` without any post-processing of
-the HTTP response.
+An app for Django that allows templates and views to add Script/Stylesheets to
+a page using Django's `forms.Media` object, with automatic collection and
+deduplication, outputting assets into `<head>`. Inspired by django-sekizai.
 
 ## Installation
 
@@ -22,9 +21,11 @@ INSTALLED_APPS = [
 
 ## Usage
 
-Place `{% include_media %}` in `<head>` of your base template. It renders the
-rest of the page as its nodelist, collects all declared assets, then outputs
-them followed by the rendered body — no middleware, no two-pass rendering.
+Place `{% include_media %}` in `<head>` of your base template. Then use the
+`use_media` templatetag or `page_media` context to add the assets you need.
+
+All your sub-templates or templates from templatetags can now reliably add
+assets to the page.
 
 ```html
 {# base.html #}
@@ -39,6 +40,43 @@ them followed by the rendered body — no middleware, no two-pass rendering.
     {% block content %}{% endblock %}
 </body>
 </html>
+```
+
+### Component and template assets
+
+Declare assets inline with `{% use_media %}`. Assets are deduplicated by
+object identity, including the same component twice will only renders its
+assets once:
+
+```html
+{% load include_media_tags %}
+{% use_media form.media %}
+{% use_media css="myapp/widget.css" %}
+{% use_media js="myapp/widget.js" type="module" %}
+```
+
+
+### View-level assets
+
+Pass `page_media` via `get_context_data`. If a site-wide context processor
+also sets `page_media`, the two are merged automatically:
+
+```python
+from django.forms import Media
+from django.forms.widgets import Script
+from include_media import Stylesheet
+from django.views.generic import TemplateView
+
+class DatePickerView(TemplateView):
+    template_name = "datepicker.html"
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx["page_media"] = Media(
+            css={"all":[Stylesheet("datepicker/datepicker.css")]},
+            js=[Script("datepicker/datepicker.js", type="module")],
+        )
+        return ctx
 ```
 
 ### Site-wide assets
@@ -72,46 +110,28 @@ TEMPLATES = [{
 }]
 ```
 
-### View-level assets
-
-Pass `page_media` via `get_context_data`. If a site-wide context processor
-also sets `page_media`, the two are merged automatically:
-
-```python
-from django.forms import Media
-from django.forms.widgets import Script
-from include_media import Stylesheet
-from django.views.generic import TemplateView
-
-class DatePickerView(TemplateView):
-    template_name = "datepicker.html"
-
-    def get_context_data(self, **kwargs):
-        ctx = super().get_context_data(**kwargs)
-        ctx["page_media"] = Media(
-            css={"all":[Stylesheet("datepicker/datepicker.css")]},
-            js=[Script("datepicker/datepicker.js", type="module")],
-        )
-        return ctx
-```
-
-### Component and template assets
-
-Declare assets inline with `{% use_media %}`. Assets are deduplicated by
-object identity — including the same component twice renders its assets once:
-
-```html
-{% load include_media_tags %}
-{% use_media form.media %}
-{% use_media css="myapp/widget.css" %}
-{% use_media js="myapp/widget.js" type="module" %}
-```
-
 ## Compatibility
 
 - Python 3.10+
 - Django 5.2, 6.0, 6.1+ (`Stylesheet` is backported for Django < 6.1)
-- csp_nonce_attr is not backported and only supported by 6.1
+- csp_nonce_attr is supported for 6.1+ with similar syntax as `forms.Media`
+
+```html
+...
+<head>
+    <meta charset="utf-8">
+    {% include_media as included_media %}
+    {% csp_nonce_attr included_media %}
+</head>
+...
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+The aim of this repo is to explore this idea and if it feels right to
+propose it back to django core, where it could be implemented cleaner.
+Any feedback is welcome.
 
 ## License
 
