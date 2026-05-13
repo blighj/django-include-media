@@ -437,6 +437,52 @@ class SiteWideMediaTests(SimpleTestCase):
         self.assertEqual(html.count("/static/shared.js"), 1)
 
 
+class MultiLayerPageMediaTests(SimpleTestCase):
+    @override_settings(STATIC_URL="/static/")
+    def test_both_layers_appear_in_output(self):
+        from django.template import Context, Template
+
+        tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
+        ctx = Context({"page_media": Media(js=[Script("view.js")])})
+        ctx.update({"page_media": Media(css={"all": [Stylesheet("site/global.css")]})})
+        html = tmpl.render(ctx)
+        self.assertInHTML('<script src="/static/view.js"></script>', html)
+        self.assertInHTML(
+            '<link href="/static/site/global.css" rel="stylesheet">', html
+        )
+
+    @override_settings(STATIC_URL="/static/")
+    def test_higher_layer_assets_come_first(self):
+        from django.template import Context, Template
+
+        tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
+        ctx = Context({"page_media": Media(js=[Script("view.js")])})
+        ctx.update({"page_media": Media(js=[Script("site.js")])})
+        html = tmpl.render(ctx)
+        self.assertLess(html.index("site.js"), html.index("view.js"))
+
+    @override_settings(STATIC_URL="/static/")
+    def test_invalid_page_media_in_any_layer_raises(self):
+        from django.template import Context, Template
+
+        tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
+        ctx = Context({"page_media": "not-a-media"})
+        ctx.update({"page_media": Media()})
+        with self.assertRaises(ImproperlyConfigured):
+            tmpl.render(ctx)
+
+    @override_settings(STATIC_URL="/static/")
+    def test_dedup_across_layers(self):
+        from django.template import Context, Template
+
+        tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
+        shared = Script("shared.js")
+        ctx = Context({"page_media": Media(js=[shared])})
+        ctx.update({"page_media": Media(js=[shared])})
+        html = tmpl.render(ctx)
+        self.assertEqual(html.count("/static/shared.js"), 1)
+
+
 @override_settings(STATIC_URL="/static/")
 class AsClauseTests(SimpleTestCase):
     """{% include_media as varname %} exposes the collected Media in context."""
