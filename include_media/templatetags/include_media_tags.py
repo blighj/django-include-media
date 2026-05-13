@@ -4,7 +4,7 @@ import warnings
 from django import template
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
-from django.forms.widgets import MediaAsset, Script
+from django.forms.widgets import Script
 
 from include_media.compat import Stylesheet
 
@@ -110,37 +110,21 @@ class UseMediaNode(template.Node):
 
         if self.css_expr is not None:
             css_val = self.css_expr.resolve(context)
-            if isinstance(css_val, str):
-                css_val = Stylesheet(css_val, **resolved_attrs, **extra)
-            elif isinstance(css_val, MediaAsset):
-                if resolved_attrs:
-                    raise template.TemplateSyntaxError(
-                        "{% use_media %} cannot apply extra attributes to a pre-built "
-                        "Stylesheet object; pass them when constructing it instead."
-                    )
-            else:
+            if not isinstance(css_val, str):
                 raise template.TemplateSyntaxError(
-                    f"{{% use_media %}} css= expected a path string or Stylesheet, "
+                    f"{{% use_media %}} css= expected a path string, "
                     f"got {type(css_val).__name__}."
                 )
-            css = {"all": [css_val]}
+            css = {"all": [Stylesheet(css_val, **resolved_attrs, **extra)]}
 
         if self.js_expr is not None:
             js_val = self.js_expr.resolve(context)
-            if isinstance(js_val, str):
-                js_val = Script(js_val, **resolved_attrs, **extra)
-            elif isinstance(js_val, Script):
-                if resolved_attrs:
-                    raise template.TemplateSyntaxError(
-                        "{% use_media %} cannot apply extra attributes to a pre-built "
-                        "Script object; pass them when constructing it instead."
-                    )
-            else:
+            if not isinstance(js_val, str):
                 raise template.TemplateSyntaxError(
-                    f"{{% use_media %}} js= expected a path string or Script, "
+                    f"{{% use_media %}} js= expected a path string, "
                     f"got {type(js_val).__name__}."
                 )
-            js = [js_val]
+            js = [Script(js_val, **resolved_attrs, **extra)]
 
         return Media(css=css, js=js)
 

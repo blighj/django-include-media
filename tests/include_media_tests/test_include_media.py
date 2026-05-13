@@ -692,15 +692,14 @@ class AssetAttributesTests(SimpleTestCase):
                     "<!DOCTYPE html><html>"
                     "<head>{% include_media %}</head>"
                     "<body>"
-                    '{% use_media js=existing_script type="module" %}'
+                    "{% use_media js=existing_script %}"
                     "</body></html>"
                 )
             },
             debug=True,
         ),
     )
-    def test_attrs_on_prebuilt_script_raises(self):
-        """Extra attrs alongside a pre-built Script object raise an error."""
+    def test_non_string_js_raises(self):
         from django.template import TemplateSyntaxError
 
         with self.assertRaises(TemplateSyntaxError):
@@ -714,15 +713,14 @@ class AssetAttributesTests(SimpleTestCase):
                     "<!DOCTYPE html><html>"
                     "<head>{% include_media %}</head>"
                     "<body>"
-                    '{% use_media css=existing_sheet media="print" %}'
+                    "{% use_media css=existing_sheet %}"
                     "</body></html>"
                 )
             },
             debug=True,
         ),
     )
-    def test_attrs_on_prebuilt_stylesheet_raises(self):
-        """Extra attrs alongside a pre-built Stylesheet object raise an error."""
+    def test_non_string_css_raises(self):
         from django.template import TemplateSyntaxError
 
         with self.assertRaises(TemplateSyntaxError):
