@@ -47,12 +47,16 @@ class IncludeMediaNode(template.Node):
         self.var_name = var_name
 
     def render(self, context):
-        existing = context.get("page_media")
-        if existing is not None and not isinstance(existing, Media):
-            raise ImproperlyConfigured(
-                "page_media in template context must be a Media instance, "
-                f"got {type(existing).__name__}"
-            )
+        existing = None
+        for layer in reversed(context.dicts):
+            if "page_media" in layer:
+                m = layer["page_media"]
+                if not isinstance(m, Media):
+                    raise ImproperlyConfigured(
+                        "page_media in template context must be a Media instance, "
+                        f"got {type(m).__name__}"
+                    )
+                existing = (existing + m) if existing is not None else m
 
         collector = _MediaCollector(existing)
 
