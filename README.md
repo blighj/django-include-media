@@ -52,9 +52,20 @@ assets once:
 {% load include_media_tags %}
 {% use_media form.media %}
 {% use_media css="myapp/widget.css" %}
-{% use_media js="myapp/widget.js" type="module" %}
+{% use_media js="myapp/script.js" %}
 ```
 
+Extra HTML attributes can be passed as keyword arguments and are forwarded
+to the rendered tag. Add `csp_nonce_attr` to opt a specific asset into
+Django's CSP nonce (Django 6.0+); the nonce is applied if `csp_nonce` is
+present in the template context and is a no-op otherwise:
+
+```html
+{% use_media js="myapp/widget.js" type="module" %}
+{% use_media js="myapp/widget.js" type="module" csp_nonce_attr %}
+{% use_media css="myapp/widget.css" media="print" %}
+{% use_media form.media csp_nonce_attr %}
+```
 
 ### View-level assets
 
@@ -90,12 +101,14 @@ from django.forms.widgets import Script
 from include_media import Stylesheet
 
 def site_media(request):
+    nonce = getattr(request, "csp_nonce", None)
+    attrs = {"nonce": nonce} if nonce else {}
     media = Media(
-        css={"all":[Stylesheet("base.css")]},
-        js=[Script("base.js", type="module")],
+        css={"all":[Stylesheet("base.css", **attrs)]},
+        js=[Script("base.js", type="module", **attrs)],
     )
     if request.user.is_authenticated:
-        media += Media(js=[Script("dashboard.js", type="module")])
+        media += Media(js=[Script("dashboard.js", type="module", **attrs)])
     return {"page_media": media}
 ```
 
@@ -113,18 +126,7 @@ TEMPLATES = [{
 ## Compatibility
 
 - Python 3.10+
-- Django 5.2, 6.0, 6.1+ (`Stylesheet` is backported for Django < 6.1)
-- csp_nonce_attr is supported for 6.1+ with similar syntax as `forms.Media`
-
-```html
-...
-<head>
-    <meta charset="utf-8">
-    {% include_media as included_media %}
-    {% csp_nonce_attr included_media %}
-</head>
-...
-```
+- Django 5.2, 6.0+ (`Stylesheet` is backported for Django < 6.1)
 
 ## Contributing
 

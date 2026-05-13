@@ -1,3 +1,4 @@
+import copy
 import warnings
 
 from django import template
@@ -7,44 +8,46 @@ from django.forms.widgets import Script
 
 from include_media.compat import Stylesheet
 
+try:
+    from django.utils.csp import CONTEXT_KEY as _CSP_CONTEXT_KEY
+except ImportError:
+    _CSP_CONTEXT_KEY = "csp_nonce"
+
 register = template.Library()
 
 _COLLECTOR_KEY = "_include_media_collector"
 
 
+def _apply_nonce(media, nonce):
+    def with_nonce(asset):
+        if not hasattr(asset, "attributes"):
+            return asset
+        new = copy.copy(asset)
+        new.attributes = {**asset.attributes, "nonce": nonce}
+        return new
+
+    return Media(
+        css={
+            medium: [with_nonce(a) for a in assets]
+            for medium, assets in media._css.items()
+        },
+        js=[with_nonce(a) for a in media._js],
+    )
+
+
 class _MediaCollector:
-    """Mutable accumulator shared by reference across all context frames.
-
-    Stored as a mutable object so use_media can accumulate from within
-    block, include, and other context-pushing scopes without reassigning
-    the context key (which would only affect the innermost frame).
-
-    Also acts as a proxy for csp_nonce_attr: when the tag calls
-    collector.render(attrs=...) it captures the nonce attrs and returns an
-    empty string; IncludeMediaNode renders the final media with those attrs
-    after the body has been fully collected.
-    """
-
-    __slots__ = ("media", "_nonce_captured", "_nonce_attrs")
+    __slots__ = ("media",)
 
     def __init__(self, initial=None):
         self.media = initial or Media()
-        self._nonce_captured = False
-        self._nonce_attrs = None
 
     def add(self, media):
         self.media = self.media + media
 
-    def render(self, *, attrs=None):
-        self._nonce_captured = True
-        self._nonce_attrs = attrs
-        return ""
-
 
 class IncludeMediaNode(template.Node):
-    def __init__(self, nodelist, var_name=None):
+    def __init__(self, nodelist):
         self.nodelist = nodelist
-        self.var_name = var_name
 
     def render(self, context):
         existing = None
@@ -60,53 +63,37 @@ class IncludeMediaNode(template.Node):
 
         collector = _MediaCollector(existing)
 
-        ctx_update = {_COLLECTOR_KEY: collector}
-        if self.var_name:
-            # Expose the collector under var_name before body render so that
-            # {% csp_nonce_attr page_media %} can call collector.render() and
-            # capture the nonce.  The collector is replaced with the final
-            # Media object in the outer context after body render.
-            ctx_update[self.var_name] = collector
-
-        with context.update(ctx_update):
+        with context.update({_COLLECTOR_KEY: collector}):
             body = self.nodelist.render(context)
 
-        page_media = collector.media
-
-        if self.var_name:
-            context[self.var_name] = page_media
-
-        if collector._nonce_captured:
-            return page_media.render(attrs=collector._nonce_attrs) + body
-
-        css = list(page_media.render_css())
-        js = list(page_media.render_js())
-        return "".join(css + js) + body
+        return collector.media.render() + body
 
 
 @register.tag("include_media")
 def do_include_media(parser, token):
     bits = token.split_contents()
-    var_name = None
-    if len(bits) == 3 and bits[1] == "as":
-        var_name = bits[2]
-    elif len(bits) != 1:
-        raise template.TemplateSyntaxError(
-            f"'{bits[0]}' takes no arguments or 'as <var_name>'"
-        )
+    if len(bits) != 1:
+        raise template.TemplateSyntaxError(f"'{bits[0]}' takes no arguments")
     nodelist = parser.parse()
-    return IncludeMediaNode(nodelist, var_name)
+    return IncludeMediaNode(nodelist)
 
 
 class UseMediaNode(template.Node):
-    def __init__(self, media_expr=None, css_expr=None, js_expr=None, attrs=None):
+    def __init__(
+        self,
+        media_expr=None,
+        css_expr=None,
+        js_expr=None,
+        attrs=None,
+        csp_nonce_attr=False,
+    ):
         self.media_expr = media_expr
         self.css_expr = css_expr
         self.js_expr = js_expr
-        self.attrs = attrs or {}  # {attr_name: FilterExpression}
+        self.attrs = attrs or {}
+        self.csp_nonce_attr = csp_nonce_attr
 
-    def _build_media(self, context):
-        """Resolve expressions and return a Media object, or None if invalid."""
+    def _build_media(self, context, nonce=None):
         if self.media_expr is not None:
             media = self.media_expr.resolve(context)
             if not isinstance(media, Media):
@@ -114,38 +101,37 @@ class UseMediaNode(template.Node):
                     f"{{% use_media %}} expected a Media object, got "
                     f"{type(media).__name__}. Did you forget .media?"
                 )
-            return media
+            return _apply_nonce(media, nonce) if nonce else media
 
         resolved_attrs = {k: v.resolve(context) for k, v in self.attrs.items()}
+        extra = {"nonce": nonce} if nonce else {}
         css = {}
         js = []
 
         if self.css_expr is not None:
             css_val = self.css_expr.resolve(context)
-            if isinstance(css_val, str):
-                css_val = Stylesheet(css_val, **resolved_attrs)
-            elif resolved_attrs:
+            if not isinstance(css_val, str):
                 raise template.TemplateSyntaxError(
-                    "{% use_media %} cannot apply extra attributes to a pre-built "
-                    "Stylesheet object; pass them when constructing it instead."
+                    f"{{% use_media %}} css= expected a path string, "
+                    f"got {type(css_val).__name__}."
                 )
-            css = {"all": [css_val]}
+            css = {"all": [Stylesheet(css_val, **resolved_attrs, **extra)]}
 
         if self.js_expr is not None:
             js_val = self.js_expr.resolve(context)
-            if isinstance(js_val, str):
-                js_val = Script(js_val, **resolved_attrs)
-            elif resolved_attrs:
+            if not isinstance(js_val, str):
                 raise template.TemplateSyntaxError(
-                    "{% use_media %} cannot apply extra attributes to a pre-built "
-                    "Script object; pass them when constructing it instead."
+                    f"{{% use_media %}} js= expected a path string, "
+                    f"got {type(js_val).__name__}."
                 )
-            js = [js_val]
+            js = [Script(js_val, **resolved_attrs, **extra)]
 
         return Media(css=css, js=js)
 
     def render(self, context):
         collector = context.get(_COLLECTOR_KEY)
+        nonce = context.get(_CSP_CONTEXT_KEY) if self.csp_nonce_attr else None
+
         if collector is None:
             if context.template.engine.debug:
                 warnings.warn(
@@ -155,11 +141,10 @@ class UseMediaNode(template.Node):
                     UserWarning,
                     stacklevel=2,
                 )
-            media = self._build_media(context)
+            media = self._build_media(context, nonce)
             return "".join(list(media.render_css()) + list(media.render_js()))
 
-        media = self._build_media(context)
-        collector.add(media)
+        collector.add(self._build_media(context, nonce))
         return ""
 
 
@@ -172,9 +157,12 @@ def do_use_media(parser, token):
     css_expr = None
     js_expr = None
     attrs = {}
+    csp_nonce_attr = False
 
     for bit in bits[1:]:
-        if "=" in bit:
+        if bit == "csp_nonce_attr":
+            csp_nonce_attr = True
+        elif "=" in bit:
             key, _, value = bit.partition("=")
             if key == "css":
                 css_expr = parser.compile_filter(value)
@@ -208,4 +196,4 @@ def do_use_media(parser, token):
             f"'{tag_name}' requires at least one argument"
         )
 
-    return UseMediaNode(media_expr, css_expr, js_expr, attrs)
+    return UseMediaNode(media_expr, css_expr, js_expr, attrs, csp_nonce_attr)
