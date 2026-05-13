@@ -140,32 +140,54 @@ SITE_WIDE_PAGE = """\
 </html>
 """
 
-# Page using the "as" clause to expose the collected Media object.
-AS_CLAUSE_PAGE = """\
+# Page using csp_nonce_attr on individual use_media tags.
+USE_MEDIA_NONCE_PAGE = """\
 {% load include_media_tags %}
 <!DOCTYPE html>
 <html>
-<head>{% include_media as page_media %}</head>
+<head>{% include_media %}</head>
 <body>
-{% use_media css="as/style.css" %}
-{% use_media js="as/script.js" %}
+{% use_media js="widget.js" csp_nonce_attr %}
+{% use_media css="widget.css" csp_nonce_attr %}
 <p>Hello</p>
 </body>
 </html>
 """
 
-# "as" clause with csp_nonce_attr (csp_nonce_attr is a Django builtin tag).
-AS_CLAUSE_WITH_NONCE_PAGE = """\
+# Page passing a full Media object with csp_nonce_attr.
+FORM_NONCE_PAGE = """\
 {% load include_media_tags %}
 <!DOCTYPE html>
 <html>
-<head>{% include_media as page_media %}{% csp_nonce_attr page_media %}</head>
+<head>{% include_media %}</head>
 <body>
-{% use_media js="widget.js" %}
-{% use_media css="widget.css" %}
+{% use_media form.media csp_nonce_attr %}
 <p>Hello</p>
 </body>
 </html>
+"""
+
+# Mixed page: one asset opts into nonce, one does not.
+MIXED_NONCE_PAGE = """\
+{% load include_media_tags %}
+<!DOCTYPE html>
+<html>
+<head>{% include_media %}</head>
+<body>
+{% use_media js="nonce.js" csp_nonce_attr %}
+{% use_media js="no-nonce.js" %}
+<p>Hello</p>
+</body>
+</html>
+"""
+
+# Orphan use_media with csp_nonce_attr (inline fallback path).
+ORPHAN_NONCE_PAGE = """\
+{% load include_media_tags %}
+<div>
+{% use_media js="orphan/script.js" csp_nonce_attr %}
+Hello
+</div>
 """
 
 # Template with use_media but no include_media.
@@ -483,44 +505,11 @@ class MultiLayerPageMediaTests(SimpleTestCase):
         self.assertEqual(html.count("/static/shared.js"), 1)
 
 
-@override_settings(STATIC_URL="/static/")
-class AsClauseTests(SimpleTestCase):
-    """{% include_media as varname %} exposes the collected Media in context."""
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_PAGE}),
-    )
-    def test_css_still_collected_into_head(self):
-        html = render_to_string("page.html")
-        self.assertInHTML('<link href="/static/as/style.css" rel="stylesheet">', html)
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_PAGE}),
-    )
-    def test_js_still_collected_into_head(self):
-        html = render_to_string("page.html")
-        self.assertInHTML('<script src="/static/as/script.js"></script>', html)
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_PAGE}),
-    )
-    def test_body_still_rendered(self):
-        html = render_to_string("page.html")
-        self.assertInHTML("<p>Hello</p>", html)
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_PAGE}),
-    )
-    def test_assets_appear_before_body_content(self):
-        html = render_to_string("page.html")
-        self.assertLess(html.index("as/style.css"), html.index("<p>Hello</p>"))
-
-
 @unittest.skipUnless(HAS_CSP, "requires Django CSP nonce support (Django 6.1+)")
 @override_settings(STATIC_URL="/static/")
 class CspNonceTests(SimpleTestCase):
     @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_WITH_NONCE_PAGE}),
+        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
     )
     def test_nonce_applied_to_script(self):
         html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
@@ -529,7 +518,7 @@ class CspNonceTests(SimpleTestCase):
         )
 
     @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_WITH_NONCE_PAGE}),
+        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
     )
     def test_nonce_applied_to_stylesheet(self):
         html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
@@ -538,20 +527,61 @@ class CspNonceTests(SimpleTestCase):
         )
 
     @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_WITH_NONCE_PAGE}),
+        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
     )
     def test_assets_present_without_nonce_in_context(self):
-        """Without a nonce in context, assets still render (no nonce attribute)."""
         html = render_to_string("page.html", {})
         self.assertInHTML('<script src="/static/widget.js"></script>', html)
         self.assertInHTML('<link href="/static/widget.css" rel="stylesheet">', html)
 
     @override_settings(
-        TEMPLATES=locmem_templates({"page.html": AS_CLAUSE_WITH_NONCE_PAGE}),
+        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
     )
     def test_assets_appear_before_body_content(self):
         html = render_to_string("page.html", {CSP_CONTEXT_KEY: "tok"})
         self.assertLess(html.index("widget.js"), html.index("<p>Hello</p>"))
+
+    @override_settings(
+        TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}),
+    )
+    def test_nonce_applied_to_form_media_script(self):
+        html = render_to_string(
+            "page.html", {CSP_CONTEXT_KEY: "testtoken", "form": ContactForm()}
+        )
+        self.assertInHTML(
+            '<script src="/static/form/form.js" nonce="testtoken"></script>', html
+        )
+
+    @override_settings(
+        TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}),
+    )
+    def test_nonce_applied_to_form_media_stylesheet(self):
+        html = render_to_string(
+            "page.html", {CSP_CONTEXT_KEY: "testtoken", "form": ContactForm()}
+        )
+        self.assertInHTML(
+            '<link href="/static/form/form.css" rel="stylesheet" nonce="testtoken">',
+            html,
+        )
+
+    @override_settings(
+        TEMPLATES=locmem_templates({"page.html": ORPHAN_NONCE_PAGE}, debug=False),
+    )
+    def test_nonce_applied_in_inline_fallback(self):
+        html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
+        self.assertInHTML(
+            '<script src="/static/orphan/script.js" nonce="testtoken"></script>', html
+        )
+
+    @override_settings(
+        TEMPLATES=locmem_templates({"page.html": MIXED_NONCE_PAGE}),
+    )
+    def test_nonce_not_applied_to_tag_without_flag(self):
+        html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
+        self.assertInHTML(
+            '<script src="/static/nonce.js" nonce="testtoken"></script>', html
+        )
+        self.assertInHTML('<script src="/static/no-nonce.js"></script>', html)
 
 
 class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
