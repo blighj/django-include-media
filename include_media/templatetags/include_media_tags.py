@@ -2,9 +2,11 @@ import copy
 import warnings
 
 from django import template
+from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
 from django.forms.widgets import Script
+from django.utils.module_loading import import_string
 
 from include_media.compat import Stylesheet
 from include_media.importmap import ImportmapScript, render_importmap
@@ -74,8 +76,18 @@ class IncludeMediaNode(template.Node):
             render_importmap(importmap_scripts, nonce) if importmap_scripts else ""
         )
         regular_media = Media(css=collector.media._css, js=regular_js)
+        assets_html = importmap_html + regular_media.render()
 
-        return importmap_html + regular_media.render() + body
+        path = getattr(django_settings, "INCLUDE_MEDIA_POSTPROCESSOR", None)
+        if path:
+            assets_html = import_string(path)(assets_html, context)
+            if not isinstance(assets_html, str):
+                raise ImproperlyConfigured(
+                    f"INCLUDE_MEDIA_POSTPROCESSOR must return a string, "
+                    f"got {type(assets_html).__name__}"
+                )
+
+        return assets_html + body
 
 
 @register.tag("include_media")

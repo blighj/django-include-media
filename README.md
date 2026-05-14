@@ -123,6 +123,43 @@ TEMPLATES = [{
 }]
 ```
 
+### App-level registration
+
+Apps can use the `register()` method to add app level assets that are linked to
+a `registered_media` context_processor.
+
+```python
+# myapp/apps.py
+from django.apps import AppConfig
+
+class MyAppConfig(AppConfig):
+    name = "myapp"
+
+    def ready(self):
+        from django.forms import Media
+        from django.forms.widgets import Script
+        from include_media import register, Stylesheet
+
+        register(Media(
+            css={"all": [Stylesheet("myapp/base.css")]},
+            js=[Script("myapp/base.js", type="module")],
+        ))
+```
+
+Add the single bundled context processor to `TEMPLATES` once, regardless of
+how many apps use `register()`:
+
+```python
+TEMPLATES = [{
+    "OPTIONS": {
+        "context_processors": [
+            ...
+            "include_media.context_processors.registered_media",
+        ],
+    },
+}]
+```
+
 ### Import maps
 
 `{% include_media %}` can generate a `<script type="importmap">` tag,
@@ -179,6 +216,34 @@ first-wins semantics: `page_media` is processed before template tags, so
 view-level declarations take precedence when the same specifier appears in
 multiple places.
 
+### Asset post-processing
+
+Set `INCLUDE_MEDIA_POSTPROCESSOR` to a dotted Python path to intercept the
+collected asset HTML before it is written to the page.  The callable receives
+the fully-rendered asset tags — after deduplication and nonce application —
+and must return a string:
+
+```python
+# settings.py
+INCLUDE_MEDIA_POSTPROCESSOR = "myproject.assets.postprocess"
+```
+
+```python
+# myproject/assets.py
+def postprocess(assets_html: str, context) -> str:
+    # assets_html contains the rendered <link> / <script> / importmap tags.
+    # context is the template Context, giving access to request, user, etc.
+    return assets_html  # return a modified string
+```
+
+`context` is the full Django template `Context`.  Access the current request
+via `context.get("request")` if you need per-request information (user,
+headers, etc.).
+
+The setting is validated at startup by Django's system check framework; a
+misconfigured path or non-callable target raises an error before the first
+request is served.
+
 ## Compatibility
 
 - Python 3.10+
@@ -196,6 +261,10 @@ Any feedback is welcome.
 BSD 3-Clause License
 
 ## Changelog
+
+### 0.2.0
+- Add a post processing hook
+- Add an app level register for media assets
 
 ### 0.1.0 — (Initial version)
 

@@ -8,10 +8,13 @@ from django.forms import Form, Media
 from django.forms.widgets import Script
 from django.template import Context, Template, TemplateSyntaxError
 from django.template.loader import render_to_string
-from django.test import SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
+from include_media import clear, register
 from include_media.compat import Stylesheet
+from include_media.context_processors import registered_media
 from include_media.importmap import ImportmapScript
+from include_media.registry import _get_registered_media
 
 try:
     from django.utils.csp import CONTEXT_KEY as CSP_CONTEXT_KEY
@@ -762,3 +765,224 @@ class ErrorHandlingTests(SimpleTestCase):
     def test_non_string_importmap_js_raises(self):
         with self.assertRaises(TemplateSyntaxError):
             render_to_string("page.html", {"js_path": Script("react.js")})
+
+
+# ---------------------------------------------------------------------------
+# Registry and context processor tests
+# ---------------------------------------------------------------------------
+
+
+class RegisterTests(SimpleTestCase):
+    def setUp(self):
+        clear()
+
+    def tearDown(self):
+        clear()
+
+    def test_register_valid_media(self):
+        register(Media(js=[Script("myapp/base.js")]))
+        self.assertIn(Script("myapp/base.js"), _get_registered_media()._js)
+
+    def test_register_non_media_raises(self):
+        with self.assertRaises(TypeError):
+            register("not-a-media")
+
+    def test_register_non_media_error_message(self):
+        with self.assertRaises(TypeError) as cm:
+            register(42)
+        self.assertIn("int", str(cm.exception))
+
+    def test_multiple_registrations_accumulated(self):
+        register(Media(js=[Script("a.js")]))
+        register(Media(css={"all": [Stylesheet("b.css")]}))
+        combined = _get_registered_media()
+        self.assertIn(Script("a.js"), combined._js)
+        self.assertIn(Stylesheet("b.css"), combined._css["all"])
+
+    def test_get_registered_media_merges_all(self):
+        register(Media(js=[Script("a.js")]))
+        register(Media(css={"all": [Stylesheet("b.css")]}))
+        combined = _get_registered_media()
+        self.assertIn(Script("a.js"), combined._js)
+        self.assertIn(Stylesheet("b.css"), combined._css["all"])
+
+    def test_get_registered_media_empty_registry(self):
+        combined = _get_registered_media()
+        self.assertEqual(combined._js, [])
+        self.assertEqual(combined._css, {})
+
+    def test_clear_empties_registry(self):
+        register(Media(js=[Script("a.js")]))
+        clear()
+        self.assertEqual(_get_registered_media()._js, [])
+
+
+class RegisteredMediaContextProcessorTests(SimpleTestCase):
+    def setUp(self):
+        clear()
+        self.request = RequestFactory().get("/")
+
+    def tearDown(self):
+        clear()
+
+    def test_returns_empty_dict_when_nothing_registered(self):
+        self.assertEqual(registered_media(self.request), {})
+
+    def test_returns_page_media_when_registered(self):
+        register(Media(js=[Script("myapp/base.js")]))
+        result = registered_media(self.request)
+        self.assertIn("page_media", result)
+        self.assertIsInstance(result["page_media"], Media)
+
+    def test_returned_media_contains_registered_assets(self):
+        register(Media(js=[Script("myapp/base.js")]))
+        register(Media(css={"all": [Stylesheet("myapp/base.css")]}))
+        result = registered_media(self.request)
+        self.assertIn(Script("myapp/base.js"), result["page_media"]._js)
+        self.assertIn(Stylesheet("myapp/base.css"), result["page_media"]._css["all"])
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
+    )
+    def test_registered_media_renders_in_template(self):
+        register(Media(js=[Script("myapp/base.js")]))
+        ctx = registered_media(self.request)
+        html = render_to_string("page.html", ctx)
+        self.assertInHTML('<script src="/static/myapp/base.js"></script>', html)
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": SITE_WIDE_PAGE}),
+    )
+    def test_merges_with_template_level_media(self):
+        register(Media(js=[Script("myapp/base.js")]))
+        ctx = registered_media(self.request)
+        html = render_to_string("page.html", ctx)
+        self.assertInHTML('<script src="/static/myapp/base.js"></script>', html)
+        self.assertInHTML('<link href="/static/page/style.css" rel="stylesheet">', html)
+
+    @override_settings(STATIC_URL="/static/")
+    def test_context_processor_and_view_page_media_both_rendered(self):
+        register(Media(js=[Script("app/base.js")]))
+        cp_ctx = registered_media(self.request)
+        tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
+        ctx = Context(cp_ctx)
+        ctx.update({"page_media": Media(css={"all": [Stylesheet("view/view.css")]})})
+        html = tmpl.render(ctx)
+        self.assertInHTML('<script src="/static/app/base.js"></script>', html)
+        self.assertInHTML('<link href="/static/view/view.css" rel="stylesheet">', html)
+
+
+# ---------------------------------------------------------------------------
+# Postprocessor hook tests
+# ---------------------------------------------------------------------------
+
+# Module-level helpers referenced by dotted path in INCLUDE_MEDIA_POSTPROCESSOR.
+_capture_calls = []
+
+
+def _capture_postprocessor(html, context):
+    _capture_calls.append((html, context))
+    return html
+
+
+def _replace_postprocessor(html, context):
+    return "REPLACED"
+
+
+def _none_postprocessor(html, context):
+    return None
+
+
+def _raising_postprocessor(html, context):
+    raise ValueError("boom")
+
+
+_NOT_CALLABLE = "not a callable"
+MODULE_PATH = "include_media_tests.test_include_media"
+
+
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": SINGLE_PAGE}),
+)
+class PostprocessorTests(SimpleTestCase):
+    def setUp(self):
+        _capture_calls.clear()
+
+    def test_no_setting_renders_normally(self):
+        html = render_to_string("page.html")
+        self.assertInHTML(
+            '<link href="/static/myapp/style.css" rel="stylesheet">', html
+        )
+        self.assertInHTML('<script src="/static/myapp/script.js"></script>', html)
+
+    @override_settings(
+        INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._capture_postprocessor"
+    )
+    def test_postprocessor_called_with_assets_html_and_context(self):
+        render_to_string("page.html", {"sentinel": "hello"})
+        self.assertEqual(len(_capture_calls), 1)
+        assets_html, ctx = _capture_calls[0]
+        self.assertIn("myapp/style.css", assets_html)
+        self.assertIn("myapp/script.js", assets_html)
+        self.assertEqual(ctx["sentinel"], "hello")
+
+    @override_settings(
+        INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._replace_postprocessor"
+    )
+    def test_postprocessor_return_value_replaces_assets(self):
+        html = render_to_string("page.html")
+        self.assertIn("REPLACED", html)
+        self.assertNotIn("myapp/style.css", html)
+        self.assertNotIn("myapp/script.js", html)
+
+    @override_settings(
+        INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._capture_postprocessor"
+    )
+    def test_body_content_still_rendered(self):
+        html = render_to_string("page.html")
+        self.assertIn("<p>Hello</p>", html)
+
+    @override_settings(INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._none_postprocessor")
+    def test_postprocessor_returning_none_raises_improperly_configured(self):
+        with self.assertRaises(ImproperlyConfigured) as cm:
+            render_to_string("page.html")
+        self.assertIn("NoneType", str(cm.exception))
+
+    @override_settings(
+        INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._raising_postprocessor"
+    )
+    def test_postprocessor_exception_propagates(self):
+        with self.assertRaises(ValueError, msg="boom"):
+            render_to_string("page.html")
+
+
+@override_settings(STATIC_URL="/static/")
+class PostprocessorSystemCheckTests(SimpleTestCase):
+    def _run_checks(self):
+        from django.core.checks import run_checks
+
+        return [e for e in run_checks() if e.id and e.id.startswith("include_media.")]
+
+    def test_no_setting_passes(self):
+        self.assertEqual(self._run_checks(), [])
+
+    @override_settings(
+        INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._capture_postprocessor"
+    )
+    def test_valid_callable_passes(self):
+        self.assertEqual(self._run_checks(), [])
+
+    @override_settings(INCLUDE_MEDIA_POSTPROCESSOR="does.not.exist")
+    def test_bad_import_path_raises_E002(self):
+        errors = self._run_checks()
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, "include_media.E002")
+
+    @override_settings(INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._NOT_CALLABLE")
+    def test_non_callable_raises_E003(self):
+        errors = self._run_checks()
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, "include_media.E003")

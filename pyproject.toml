@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-include-media"
-version = "0.1.0"
+version = "0.2.0"
 description = "Include Django Media assets into <head> using template tags"
 readme = "README.md"
 license = "BSD-3-Clause"
