@@ -822,12 +822,14 @@ class ImportmapOrphanTests(SimpleTestCase):
         STATIC_URL="/static/",
         TEMPLATES=locmem_templates({"page.html": ORPHAN_IMPORTMAP_PAGE}, debug=True),
     )
-    def test_warns_and_renders_inline_in_debug(self):
-        with self.assertWarns(UserWarning) as cm:
+    def test_renders_inline_without_warning_in_debug(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             html = render_to_string("page.html")
         self.assertIn('<script type="importmap">', html)
         self.assertIn('"/static/vendor/react.js"', html)
-        self.assertIn("include_media", str(cm.warning))
 
     @override_settings(
         STATIC_URL="/static/",

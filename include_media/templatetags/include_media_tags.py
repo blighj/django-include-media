@@ -6,7 +6,7 @@ from django import template
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
 from django.forms.widgets import Script
-from django.utils.html import escape as _html_escape
+from django.utils.html import escape
 
 from include_media.compat import Stylesheet
 from include_media.importmap import ImportmapScript
@@ -28,7 +28,7 @@ def _render_importmap(scripts, nonce=None):
             entries[s._importmap_specifier] = s.path
     content = json.dumps({"imports": entries})
     content = content.replace("</", "<\\/")
-    nonce_attr = f' nonce="{_html_escape(nonce)}"' if nonce else ""
+    nonce_attr = f' nonce="{escape(nonce)}"' if nonce else ""
     return f'<script type="importmap"{nonce_attr}>{content}</script>\n'
 
 
@@ -79,17 +79,15 @@ class IncludeMediaNode(template.Node):
         with context.update({_COLLECTOR_KEY: collector}):
             body = self.nodelist.render(context)
 
-        importmap_scripts = [
-            s for s in collector.media._js if isinstance(s, ImportmapScript)
-        ]
+        importmap_scripts, regular_js = [], []
+        for s in collector.media._js:
+            (
+                importmap_scripts if isinstance(s, ImportmapScript) else regular_js
+            ).append(s)
         nonce = context.get(_CSP_CONTEXT_KEY)
         importmap_html = (
             _render_importmap(importmap_scripts, nonce) if importmap_scripts else ""
         )
-
-        regular_js = [
-            s for s in collector.media._js if not isinstance(s, ImportmapScript)
-        ]
         regular_media = Media(css=collector.media._css, js=regular_js)
 
         return importmap_html + regular_media.render() + body
@@ -175,14 +173,7 @@ class UseMediaNode(template.Node):
                 )
             script = ImportmapScript(js_val, specifier=specifier)
             if collector is None:
-                if context.template.engine.debug:
-                    warnings.warn(
-                        "{% use_media importmap=... %} rendered outside "
-                        "{% include_media %}: outputting inline importmap tag.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                return _render_importmap([script])
+                return _render_importmap([script], nonce)
             collector.add(Media(js=[script]))
             return ""
 
