@@ -1,4 +1,18 @@
+import json
+
 from django.forms.widgets import Script
+from django.utils.html import escape
+
+
+def render_importmap(scripts, nonce=None):
+    entries = {}
+    for s in scripts:
+        if s._importmap_specifier not in entries:
+            entries[s._importmap_specifier] = s.path
+    content = json.dumps({"imports": entries})
+    content = content.replace("</", "<\\/")
+    nonce_attr = f' nonce="{escape(nonce)}"' if nonce else ""
+    return f'<script type="importmap"{nonce_attr}>{content}</script>\n'
 
 
 class ImportmapScript(Script):

@@ -1,10 +1,12 @@
 """Tests for {% include_media %} and {% use_media %} template tags."""
 
 import unittest
+import warnings
 
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Form, Media
 from django.forms.widgets import Script
+from django.template import Context, Template, TemplateSyntaxError
 from django.template.loader import render_to_string
 from django.test import SimpleTestCase, override_settings
 
@@ -37,23 +39,25 @@ def locmem_templates(templates, debug=False):
     ]
 
 
+def page(body, head="{% include_media %}"):
+    return (
+        "{% load include_media_tags %}"
+        "<!DOCTYPE html><html>"
+        f"<head>{head}</head>"
+        f"<body>{body}</body>"
+        "</html>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Template fixtures
 # ---------------------------------------------------------------------------
 
-# Flat page: include_media in head, use_media in body.
-SINGLE_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media css="myapp/style.css" %}
-{% use_media js="myapp/script.js" %}
-<p>Hello</p>
-</body>
-</html>
-"""
+SINGLE_PAGE = page(
+    '{% use_media css="myapp/style.css" %}'
+    '{% use_media js="myapp/script.js" %}'
+    "<p>Hello</p>"
+)
 
 # Base template used by extends tests.
 BASE = """\
@@ -83,15 +87,7 @@ COMPONENT = """\
 <div class="component">Component</div>
 """
 
-# Flat page that {% include %}s a component.
-PAGE_WITH_INCLUDE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>{% include "component.html" %}</body>
-</html>
-"""
+PAGE_WITH_INCLUDE = page('{% include "component.html" %}')
 
 # Child that extends BASE and also {% include %}s a component.
 CHILD_EXTENDS_WITH_INCLUDE = """\
@@ -104,131 +100,84 @@ CHILD_EXTENDS_WITH_INCLUDE = """\
 {% endblock %}
 """
 
-# Minimal page for context-based tests (no use_media in template).
-PLAIN_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body><p>Hello</p></body>
-</html>
-"""
+PLAIN_PAGE = page("<p>Hello</p>")
+FORM_PAGE = page("{% use_media form.media %}{{ form.as_p }}<p>Hello</p>")
+SITE_WIDE_PAGE = page('{% use_media css="page/style.css" %}<p>Hello</p>')
+SHARED_JS_PAGE = page('{% use_media js="shared.js" %}<p>Hello</p>')
 
-# Page that passes form.media to use_media.
-FORM_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media form.media %}
-{{ form.as_p }}
-<p>Hello</p>
-</body>
-</html>
-"""
+USE_MEDIA_NONCE_PAGE = page(
+    '{% use_media js="widget.js" csp_nonce_attr %}'
+    '{% use_media css="widget.css" csp_nonce_attr %}'
+    "<p>Hello</p>"
+)
+FORM_NONCE_PAGE = page("{% use_media form.media csp_nonce_attr %}<p>Hello</p>")
+MIXED_NONCE_PAGE = page(
+    '{% use_media js="nonce.js" csp_nonce_attr %}'
+    '{% use_media js="no-nonce.js" %}'
+    "<p>Hello</p>"
+)
 
-# Page for site-wide + template-level merge test.
-SITE_WIDE_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media css="page/style.css" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-# Page using csp_nonce_attr on individual use_media tags.
-USE_MEDIA_NONCE_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="widget.js" csp_nonce_attr %}
-{% use_media css="widget.css" csp_nonce_attr %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-# Page passing a full Media object with csp_nonce_attr.
-FORM_NONCE_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media form.media csp_nonce_attr %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-# Mixed page: one asset opts into nonce, one does not.
-MIXED_NONCE_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="nonce.js" csp_nonce_attr %}
-{% use_media js="no-nonce.js" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-# Orphan use_media with csp_nonce_attr (inline fallback path).
-ORPHAN_NONCE_PAGE = """\
-{% load include_media_tags %}
-<div>
-{% use_media js="orphan/script.js" csp_nonce_attr %}
-Hello
-</div>
-"""
-
-# Template with use_media but no include_media.
-ORPHAN_USE_MEDIA = """\
-{% load include_media_tags %}
-<div>
-{% use_media css="orphan/style.css" %}
-Hello
-</div>
-"""
+# Orphan templates (no include_media).
+ORPHAN_USE_MEDIA = (
+    "{% load include_media_tags %}"
+    "<div>"
+    '{% use_media css="orphan/style.css" %}'
+    "Hello"
+    "</div>"
+)
+ORPHAN_NONCE_PAGE = (
+    "{% load include_media_tags %}"
+    "<div>"
+    '{% use_media js="orphan/script.js" csp_nonce_attr %}'
+    "Hello"
+    "</div>"
+)
+ORPHAN_IMPORTMAP_PAGE = (
+    "{% load include_media_tags %}"
+    "<div>"
+    '{% use_media js="vendor/react.js" importmap="react" %}'
+    "Hello"
+    "</div>"
+)
 
 # Component used via {% include "..." only %}.
-ONLY_COMPONENT = """\
-{% load include_media_tags %}
-{% use_media css="only/style.css" %}
-<div>Only content</div>
-"""
+ONLY_COMPONENT = (
+    "{% load include_media_tags %}"
+    '{% use_media css="only/style.css" %}'
+    "<div>Only content</div>"
+)
+PAGE_WITH_ONLY_INCLUDE = page('{% include "only_component.html" only %}')
 
-# Page that includes a component with the "only" option.
-PAGE_WITH_ONLY_INCLUDE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>{% include "only_component.html" only %}</body>
-</html>
-"""
+# Importmap fixtures.
+IMPORTMAP_PAGE = page(
+    '{% use_media js="vendor/react.js" importmap="react" %}'
+    '{% use_media js="vendor/lodash.js" importmap="lodash" %}'
+    "<p>Hello</p>"
+)
+IMPORTMAP_WITH_REGULAR_ASSETS_PAGE = page(
+    '{% use_media js="vendor/react.js" importmap="react" %}'
+    '{% use_media css="app/style.css" %}'
+    '{% use_media js="app/main.js" type="module" %}'
+    "<p>Hello</p>"
+)
+IMPORTMAP_DEDUP_PAGE = page(
+    '{% use_media js="vendor/react.js" importmap="react" %}'
+    '{% use_media js="vendor/react-alt.js" importmap="react" %}'
+    "<p>Hello</p>"
+)
+IMPORTMAP_CDN_PAGE = page(
+    '{% use_media js="https://cdn.example.com/react.js" importmap="react" %}'
+    "<p>Hello</p>"
+)
+IMPORTMAP_NONCE_PAGE = page(
+    '{% use_media js="vendor/react.js" importmap="react" %}' "<p>Hello</p>"
+)
 
-# Page for dedup-across-sources test.
-SHARED_JS_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="shared.js" %}
-<p>Hello</p>
-</body>
-</html>
-"""
+# Asset-attribute fixtures.
+ATTR_JS_PAGE = page('{% use_media js="widget.js" type="module" %}')
+ATTR_CSS_PAGE = page('{% use_media css="print.css" media="print" %}')
+ATTR_JS_NONSTRING_PAGE = page("{% use_media js=existing_script %}")
+ATTR_CSS_NONSTRING_PAGE = page("{% use_media css=existing_sheet %}")
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +193,11 @@ class ContactForm(Form):
         js = [Script("form/form.js")]
 
 
+class ModuleForm(Form):
+    class Media:
+        js = [ImportmapScript("vendor/htmx.js", specifier="htmx")]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -254,25 +208,13 @@ class ContactForm(Form):
     TEMPLATES=locmem_templates({"page.html": SINGLE_PAGE}),
 )
 class SinglePageTests(SimpleTestCase):
-    """Flat template: include_media in head, use_media inline in body."""
-
-    def test_css_collected_into_head(self):
+    def test_renders_assets_in_head_before_body(self):
         html = render_to_string("page.html")
         self.assertInHTML(
             '<link href="/static/myapp/style.css" rel="stylesheet">', html
         )
-
-    def test_js_collected_into_head(self):
-        html = render_to_string("page.html")
         self.assertInHTML('<script src="/static/myapp/script.js"></script>', html)
-
-    def test_assets_appear_before_body_content(self):
-        html = render_to_string("page.html")
         self.assertLess(html.index("myapp/style.css"), html.index("<p>Hello</p>"))
-
-    def test_body_content_still_rendered(self):
-        html = render_to_string("page.html")
-        self.assertInHTML("<p>Hello</p>", html)
 
 
 @override_settings(
@@ -280,20 +222,12 @@ class SinglePageTests(SimpleTestCase):
     TEMPLATES=locmem_templates({"base.html": BASE, "child.html": CHILD_EXTENDS}),
 )
 class ExtendsTests(SimpleTestCase):
-    """Child template extends base; use_media lives inside a block."""
-
-    def test_css_from_child_block_in_head(self):
+    def test_child_block_assets_in_head(self):
         html = render_to_string("child.html")
         self.assertInHTML(
             '<link href="/static/child/style.css" rel="stylesheet">', html
         )
-
-    def test_js_from_child_block_in_head(self):
-        html = render_to_string("child.html")
         self.assertInHTML('<script src="/static/child/script.js"></script>', html)
-
-    def test_block_content_rendered_in_body(self):
-        html = render_to_string("child.html")
         self.assertInHTML("<p>Child content</p>", html)
 
 
@@ -304,65 +238,36 @@ class ExtendsTests(SimpleTestCase):
     ),
 )
 class IncludesTests(SimpleTestCase):
-    """Flat page that includes a component; component declares use_media."""
-
     def test_included_component_css_in_head(self):
         html = render_to_string("page.html")
         self.assertInHTML(
             '<link href="/static/component/style.css" rel="stylesheet">', html
         )
-
-    def test_component_body_rendered(self):
-        html = render_to_string("page.html")
         self.assertInHTML('<div class="component">Component</div>', html)
 
 
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates(
+        {
+            "base.html": BASE,
+            "page.html": CHILD_EXTENDS_WITH_INCLUDE,
+            "component.html": COMPONENT,
+        }
+    ),
+)
 class ExtendsWithIncludeTests(SimpleTestCase):
-    """Child extends base AND includes a component; both media sources collected."""
-
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates(
-            {
-                "base.html": BASE,
-                "page.html": CHILD_EXTENDS_WITH_INCLUDE,
-                "component.html": COMPONENT,
-            }
-        ),
-    )
     def test_component_css_in_head(self):
         html = render_to_string("page.html")
         self.assertInHTML(
             '<link href="/static/component/style.css" rel="stylesheet">', html
         )
 
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates(
-            {
-                "base.html": BASE,
-                "page.html": CHILD_EXTENDS_WITH_INCLUDE,
-                "component.html": COMPONENT,
-            }
-        ),
-    )
     def test_duplicate_include_deduplicates_assets(self):
-        """Component included twice; its CSS link appears exactly once."""
         html = render_to_string("page.html")
         self.assertEqual(html.count("/static/component/style.css"), 1)
 
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates(
-            {
-                "base.html": BASE,
-                "page.html": CHILD_EXTENDS_WITH_INCLUDE,
-                "component.html": COMPONENT,
-            }
-        ),
-    )
     def test_component_html_rendered_twice(self):
-        """Assets are deduplicated but the component HTML still appears twice."""
         html = render_to_string("page.html")
         self.assertEqual(html.count('<div class="component">Component</div>'), 2)
 
@@ -372,22 +277,12 @@ class ExtendsWithIncludeTests(SimpleTestCase):
     TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
 )
 class ViewMediaTests(SimpleTestCase):
-    """page_media passed in context, as a view would via get_context_data."""
-
-    def test_view_css_in_head(self):
+    def test_view_media_rendered(self):
         context = {"page_media": Media(css={"all": [Stylesheet("view/style.css")]})}
         html = render_to_string("page.html", context)
         self.assertInHTML('<link href="/static/view/style.css" rel="stylesheet">', html)
 
-    def test_view_js_in_head(self):
-        context = {"page_media": Media(js=[Script("view/script.js", type="module")])}
-        html = render_to_string("page.html", context)
-        self.assertInHTML(
-            '<script src="/static/view/script.js" type="module"></script>', html
-        )
-
     def test_no_page_media_in_context_renders_cleanly(self):
-        """include_media initialises page_media itself if absent from context."""
         html = render_to_string("page.html", {})
         self.assertInHTML("<p>Hello</p>", html)
 
@@ -397,50 +292,16 @@ class ViewMediaTests(SimpleTestCase):
     TEMPLATES=locmem_templates({"page.html": FORM_PAGE}),
 )
 class FormMediaTests(SimpleTestCase):
-    """use_media form.media collects assets declared on a form."""
-
-    def test_form_css_in_head(self):
+    def test_form_media_collected(self):
         html = render_to_string("page.html", {"form": ContactForm()})
         self.assertInHTML('<link href="/static/form/form.css" rel="stylesheet">', html)
-
-    def test_form_js_in_head(self):
-        html = render_to_string("page.html", {"form": ContactForm()})
         self.assertInHTML('<script src="/static/form/form.js"></script>', html)
 
-    def test_form_html_rendered_in_body(self):
-        html = render_to_string("page.html", {"form": ContactForm()})
-        self.assertInHTML("<p>Hello</p>", html)
 
-
+@override_settings(STATIC_URL="/static/")
 class SiteWideMediaTests(SimpleTestCase):
-    """page_media set in context (site-wide) merges with use_media from template."""
-
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": SITE_WIDE_PAGE}),
-    )
-    def test_site_wide_css_in_head(self):
-        context = {"page_media": Media(css={"all": [Stylesheet("site/global.css")]})}
-        html = render_to_string("page.html", context)
-        self.assertInHTML(
-            '<link href="/static/site/global.css" rel="stylesheet">', html
-        )
-
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": SITE_WIDE_PAGE}),
-    )
-    def test_template_level_css_in_head(self):
-        context = {"page_media": Media(css={"all": [Stylesheet("site/global.css")]})}
-        html = render_to_string("page.html", context)
-        self.assertInHTML('<link href="/static/page/style.css" rel="stylesheet">', html)
-
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": SITE_WIDE_PAGE}),
-    )
+    @override_settings(TEMPLATES=locmem_templates({"page.html": SITE_WIDE_PAGE}))
     def test_site_wide_and_template_both_present(self):
-        """Both site-wide and template-level assets appear in the same head."""
         context = {"page_media": Media(css={"all": [Stylesheet("site/global.css")]})}
         html = render_to_string("page.html", context)
         self.assertInHTML(
@@ -448,12 +309,8 @@ class SiteWideMediaTests(SimpleTestCase):
         )
         self.assertInHTML('<link href="/static/page/style.css" rel="stylesheet">', html)
 
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": SHARED_JS_PAGE}),
-    )
+    @override_settings(TEMPLATES=locmem_templates({"page.html": SHARED_JS_PAGE}))
     def test_dedup_across_context_and_use_media(self):
-        """Script in context page_media and via use_media appears exactly once."""
         shared = Script("shared.js")
         context = {"page_media": Media(js=[shared])}
         html = render_to_string("page.html", context)
@@ -463,8 +320,6 @@ class SiteWideMediaTests(SimpleTestCase):
 class MultiLayerPageMediaTests(SimpleTestCase):
     @override_settings(STATIC_URL="/static/")
     def test_both_layers_appear_in_output(self):
-        from django.template import Context, Template
-
         tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
         ctx = Context({"page_media": Media(js=[Script("view.js")])})
         ctx.update({"page_media": Media(css={"all": [Stylesheet("site/global.css")]})})
@@ -476,8 +331,6 @@ class MultiLayerPageMediaTests(SimpleTestCase):
 
     @override_settings(STATIC_URL="/static/")
     def test_higher_layer_assets_come_first(self):
-        from django.template import Context, Template
-
         tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
         ctx = Context({"page_media": Media(js=[Script("view.js")])})
         ctx.update({"page_media": Media(js=[Script("site.js")])})
@@ -486,8 +339,6 @@ class MultiLayerPageMediaTests(SimpleTestCase):
 
     @override_settings(STATIC_URL="/static/")
     def test_invalid_page_media_in_any_layer_raises(self):
-        from django.template import Context, Template
-
         tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
         ctx = Context({"page_media": "not-a-media"})
         ctx.update({"page_media": Media()})
@@ -496,8 +347,6 @@ class MultiLayerPageMediaTests(SimpleTestCase):
 
     @override_settings(STATIC_URL="/static/")
     def test_dedup_across_layers(self):
-        from django.template import Context, Template
-
         tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
         shared = Script("shared.js")
         ctx = Context({"page_media": Media(js=[shared])})
@@ -507,66 +356,61 @@ class MultiLayerPageMediaTests(SimpleTestCase):
 
 
 @unittest.skipUnless(HAS_CSP, "requires Django CSP nonce support (Django 6.1+)")
-@override_settings(STATIC_URL="/static/")
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
+)
 class CspNonceTests(SimpleTestCase):
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
-    )
-    def test_nonce_applied_to_script(self):
+    def test_nonce_applied_to_assets(self):
         html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
         self.assertInHTML(
             '<script src="/static/widget.js" nonce="testtoken"></script>', html
         )
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
-    )
-    def test_nonce_applied_to_stylesheet(self):
-        html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
         self.assertInHTML(
             '<link href="/static/widget.css" rel="stylesheet" nonce="testtoken">', html
         )
+        self.assertLess(html.index("widget.js"), html.index("<p>Hello</p>"))
 
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
-    )
     def test_assets_present_without_nonce_in_context(self):
         html = render_to_string("page.html", {})
         self.assertInHTML('<script src="/static/widget.js"></script>', html)
         self.assertInHTML('<link href="/static/widget.css" rel="stylesheet">', html)
 
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": USE_MEDIA_NONCE_PAGE}),
-    )
-    def test_assets_appear_before_body_content(self):
-        html = render_to_string("page.html", {CSP_CONTEXT_KEY: "tok"})
-        self.assertLess(html.index("widget.js"), html.index("<p>Hello</p>"))
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}),
-    )
-    def test_nonce_applied_to_form_media_script(self):
+    @override_settings(TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}))
+    def test_nonce_applied_to_form_media(self):
         html = render_to_string(
             "page.html", {CSP_CONTEXT_KEY: "testtoken", "form": ContactForm()}
         )
         self.assertInHTML(
             '<script src="/static/form/form.js" nonce="testtoken"></script>', html
         )
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}),
-    )
-    def test_nonce_applied_to_form_media_stylesheet(self):
-        html = render_to_string(
-            "page.html", {CSP_CONTEXT_KEY: "testtoken", "form": ContactForm()}
-        )
         self.assertInHTML(
             '<link href="/static/form/form.css" rel="stylesheet" nonce="testtoken">',
             html,
         )
 
+    @override_settings(TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}))
+    def test_nonce_applied_to_string_assets(self):
+        """Plain string assets in Media are upgraded to Script/Stylesheet with nonce."""
+
+        class LegacyForm(Form):
+            class Media:
+                css = {"all": ["legacy/style.css"]}
+                js = ["legacy/script.js"]
+
+        html = render_to_string(
+            "page.html", {CSP_CONTEXT_KEY: "testtoken", "form": LegacyForm()}
+        )
+        self.assertInHTML(
+            '<script src="/static/legacy/script.js" nonce="testtoken"></script>', html
+        )
+        self.assertInHTML(
+            '<link href="/static/legacy/style.css" rel="stylesheet" nonce="testtoken">',
+            html,
+        )
+
     @override_settings(
-        TEMPLATES=locmem_templates({"page.html": ORPHAN_NONCE_PAGE}, debug=False),
+        TEMPLATES=locmem_templates({"page.html": ORPHAN_NONCE_PAGE}, debug=False)
     )
     def test_nonce_applied_in_inline_fallback(self):
         html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
@@ -574,9 +418,7 @@ class CspNonceTests(SimpleTestCase):
             '<script src="/static/orphan/script.js" nonce="testtoken"></script>', html
         )
 
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": MIXED_NONCE_PAGE}),
-    )
+    @override_settings(TEMPLATES=locmem_templates({"page.html": MIXED_NONCE_PAGE}))
     def test_nonce_not_applied_to_tag_without_flag(self):
         html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testtoken"})
         self.assertInHTML(
@@ -621,7 +463,6 @@ class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
         ),
     )
     def test_only_include_warns_in_debug(self):
-        """use_media inside {% include '...' only %} behaves like an orphan."""
         with self.assertWarns(UserWarning):
             html = render_to_string("page.html")
         self.assertIn("only/style.css", html)
@@ -642,83 +483,6 @@ class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
 
 
 # ---------------------------------------------------------------------------
-# Importmap template fixtures
-# ---------------------------------------------------------------------------
-
-IMPORTMAP_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="vendor/react.js" importmap="react" %}
-{% use_media js="vendor/lodash.js" importmap="lodash" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-IMPORTMAP_WITH_REGULAR_ASSETS_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="vendor/react.js" importmap="react" %}
-{% use_media css="app/style.css" %}
-{% use_media js="app/main.js" type="module" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-IMPORTMAP_DEDUP_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="vendor/react.js" importmap="react" %}
-{% use_media js="vendor/react-alt.js" importmap="react" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-IMPORTMAP_CDN_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="https://cdn.example.com/react.js" importmap="react" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-ORPHAN_IMPORTMAP_PAGE = """\
-{% load include_media_tags %}
-<div>
-{% use_media js="vendor/react.js" importmap="react" %}
-Hello
-</div>
-"""
-
-IMPORTMAP_NONCE_PAGE = """\
-{% load include_media_tags %}
-<!DOCTYPE html>
-<html>
-<head>{% include_media %}</head>
-<body>
-{% use_media js="vendor/react.js" importmap="react" %}
-<p>Hello</p>
-</body>
-</html>
-"""
-
-
-# ---------------------------------------------------------------------------
 # Importmap tests
 # ---------------------------------------------------------------------------
 
@@ -728,29 +492,16 @@ IMPORTMAP_NONCE_PAGE = """\
     TEMPLATES=locmem_templates({"page.html": IMPORTMAP_PAGE}),
 )
 class ImportmapTests(SimpleTestCase):
-    def test_importmap_tag_rendered(self):
+    def test_importmap_rendered(self):
         html = render_to_string("page.html")
         self.assertIn('<script type="importmap">', html)
-
-    def test_importmap_contains_specifiers_and_urls(self):
-        html = render_to_string("page.html")
+        self.assertEqual(html.count('<script type="importmap">'), 1)
         self.assertIn('"react"', html)
         self.assertIn('"/static/vendor/react.js"', html)
         self.assertIn('"lodash"', html)
         self.assertIn('"/static/vendor/lodash.js"', html)
-
-    def test_exactly_one_importmap_tag(self):
-        html = render_to_string("page.html")
-        self.assertEqual(html.count('<script type="importmap">'), 1)
-
-    def test_importmap_assets_not_rendered_as_script_tags(self):
-        html = render_to_string("page.html")
         self.assertNotIn('src="/static/vendor/react.js"', html)
         self.assertNotIn('src="/static/vendor/lodash.js"', html)
-
-    def test_body_content_rendered(self):
-        html = render_to_string("page.html")
-        self.assertInHTML("<p>Hello</p>", html)
 
 
 @override_settings(
@@ -766,13 +517,7 @@ class ImportmapWithRegularAssetsTests(SimpleTestCase):
         self.assertLess(
             html.index('<script type="importmap">'), html.index("app/main.js")
         )
-
-    def test_regular_css_still_rendered(self):
-        html = render_to_string("page.html")
         self.assertInHTML('<link href="/static/app/style.css" rel="stylesheet">', html)
-
-    def test_regular_js_still_rendered(self):
-        html = render_to_string("page.html")
         self.assertInHTML(
             '<script src="/static/app/main.js" type="module"></script>', html
         )
@@ -788,10 +533,6 @@ class ImportmapDedupTests(SimpleTestCase):
         self.assertIn('"/static/vendor/react.js"', html)
         self.assertNotIn("react-alt", html)
 
-    def test_exactly_one_importmap_tag(self):
-        html = render_to_string("page.html")
-        self.assertEqual(html.count('<script type="importmap">'), 1)
-
 
 @override_settings(
     STATIC_URL="/static/",
@@ -801,9 +542,6 @@ class ImportmapCdnUrlTests(SimpleTestCase):
     def test_absolute_url_used_verbatim(self):
         html = render_to_string("page.html")
         self.assertIn('"https://cdn.example.com/react.js"', html)
-
-    def test_static_prefix_not_prepended(self):
-        html = render_to_string("page.html")
         self.assertNotIn("/static/https", html)
 
 
@@ -818,27 +556,20 @@ class NoImportmapTests(SimpleTestCase):
 
 
 class ImportmapOrphanTests(SimpleTestCase):
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": ORPHAN_IMPORTMAP_PAGE}, debug=True),
-    )
-    def test_renders_inline_without_warning_in_debug(self):
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            html = render_to_string("page.html")
-        self.assertIn('<script type="importmap">', html)
-        self.assertIn('"/static/vendor/react.js"', html)
-
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": ORPHAN_IMPORTMAP_PAGE}, debug=False),
-    )
-    def test_renders_inline_silently_in_production(self):
-        html = render_to_string("page.html")
-        self.assertIn('<script type="importmap">', html)
-        self.assertIn('"/static/vendor/react.js"', html)
+    def test_renders_inline(self):
+        for debug in (True, False):
+            with self.subTest(debug=debug):
+                with override_settings(
+                    STATIC_URL="/static/",
+                    TEMPLATES=locmem_templates(
+                        {"page.html": ORPHAN_IMPORTMAP_PAGE}, debug=debug
+                    ),
+                ):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error")
+                        html = render_to_string("page.html")
+                    self.assertIn('<script type="importmap">', html)
+                    self.assertIn('"/static/vendor/react.js"', html)
 
 
 @unittest.skipUnless(HAS_CSP, "requires Django CSP nonce support (Django 6.1+)")
@@ -862,26 +593,11 @@ class ImportmapScriptTests(SimpleTestCase):
         STATIC_URL="/static/",
         TEMPLATES=locmem_templates({"page.html": FORM_PAGE}),
     )
-    def test_importmap_script_in_form_media_renders_importmap_tag(self):
-        class ModuleForm(Form):
-            class Media:
-                js = [ImportmapScript("vendor/htmx.js", specifier="htmx")]
-
+    def test_importmap_script_in_form_media(self):
         html = render_to_string("page.html", {"form": ModuleForm()})
         self.assertIn('<script type="importmap">', html)
         self.assertIn('"htmx"', html)
         self.assertIn('"/static/vendor/htmx.js"', html)
-
-    @override_settings(
-        STATIC_URL="/static/",
-        TEMPLATES=locmem_templates({"page.html": FORM_PAGE}),
-    )
-    def test_importmap_script_not_rendered_as_script_tag(self):
-        class ModuleForm(Form):
-            class Media:
-                js = [ImportmapScript("vendor/htmx.js", specifier="htmx")]
-
-        html = render_to_string("page.html", {"form": ModuleForm()})
         self.assertNotIn('src="/static/vendor/htmx.js"', html)
 
     @override_settings(
@@ -937,10 +653,6 @@ class ImportmapScriptTests(SimpleTestCase):
                 js=[ImportmapScript("vendor/htmx-1.js", specifier="htmx")]
             ),
         }
-        # Template tag also declares "htmx" — but template tags run after context,
-        # so the context entry wins.
-        from django.template import Context, Template
-
         tmpl = Template(
             "{% load include_media_tags %}{% include_media %}"
             '{% use_media js="vendor/htmx-2.js" importmap="htmx" %}'
@@ -953,85 +665,29 @@ class ImportmapScriptTests(SimpleTestCase):
 
 class ImportmapParseErrorTests(SimpleTestCase):
     @override_settings(STATIC_URL="/static/")
-    def test_importmap_without_js_raises(self):
-        from django.template import TemplateSyntaxError
-
-        with self.assertRaises(TemplateSyntaxError):
-            from django.template import Template
-
-            Template(
-                "{% load include_media_tags %}" '{% use_media importmap="react" %}'
-            )
-
-    @override_settings(STATIC_URL="/static/")
-    def test_importmap_with_css_raises(self):
-        from django.template import Template, TemplateSyntaxError
-
-        with self.assertRaises(TemplateSyntaxError):
-            Template(
-                "{% load include_media_tags %}"
-                '{% use_media css="app.css" importmap="react" %}'
-            )
-
-    @override_settings(STATIC_URL="/static/")
-    def test_importmap_with_positional_raises(self):
-        from django.template import Template, TemplateSyntaxError
-
-        with self.assertRaises(TemplateSyntaxError):
-            Template(
-                "{% load include_media_tags %}"
-                '{% use_media some_media importmap="react" %}'
-            )
-
-    @override_settings(STATIC_URL="/static/")
-    def test_importmap_with_extra_attrs_raises(self):
-        from django.template import Template, TemplateSyntaxError
-
-        with self.assertRaises(TemplateSyntaxError):
-            Template(
-                "{% load include_media_tags %}"
-                '{% use_media js="react.js" importmap="react" integrity="sha256-abc" %}'
-            )
+    def test_importmap_parse_errors(self):
+        bad = [
+            '{% use_media importmap="react" %}',
+            '{% use_media css="app.css" importmap="react" %}',
+            '{% use_media some_media importmap="react" %}',
+            '{% use_media js="react.js" importmap="react" integrity="sha256-abc" %}',
+        ]
+        for snippet in bad:
+            with self.subTest(snippet=snippet):
+                with self.assertRaises(TemplateSyntaxError):
+                    Template("{% load include_media_tags %}" + snippet)
 
 
 @override_settings(STATIC_URL="/static/")
 class AssetAttributesTests(SimpleTestCase):
-    """Arbitrary HTML attributes passed via use_media kwargs reach Script/Stylesheet."""
-
-    @override_settings(
-        TEMPLATES=locmem_templates(
-            {
-                "page.html": (
-                    "{% load include_media_tags %}"
-                    "<!DOCTYPE html><html>"
-                    "<head>{% include_media %}</head>"
-                    "<body>"
-                    '{% use_media js="widget.js" type="module" %}'
-                    "</body></html>"
-                )
-            }
-        ),
-    )
+    @override_settings(TEMPLATES=locmem_templates({"page.html": ATTR_JS_PAGE}))
     def test_js_string_attribute(self):
         html = render_to_string("page.html")
         self.assertInHTML(
             '<script src="/static/widget.js" type="module"></script>', html
         )
 
-    @override_settings(
-        TEMPLATES=locmem_templates(
-            {
-                "page.html": (
-                    "{% load include_media_tags %}"
-                    "<!DOCTYPE html><html>"
-                    "<head>{% include_media %}</head>"
-                    "<body>"
-                    '{% use_media css="print.css" media="print" %}'
-                    "</body></html>"
-                )
-            }
-        ),
-    )
+    @override_settings(TEMPLATES=locmem_templates({"page.html": ATTR_CSS_PAGE}))
     def test_css_string_attribute(self):
         html = render_to_string("page.html")
         self.assertInHTML(
@@ -1039,97 +695,70 @@ class AssetAttributesTests(SimpleTestCase):
         )
 
     @override_settings(
-        TEMPLATES=locmem_templates(
-            {
-                "page.html": (
-                    "{% load include_media_tags %}"
-                    "<!DOCTYPE html><html>"
-                    "<head>{% include_media %}</head>"
-                    "<body>"
-                    "{% use_media js=existing_script %}"
-                    "</body></html>"
-                )
-            },
-            debug=True,
-        ),
+        TEMPLATES=locmem_templates({"page.html": ATTR_JS_NONSTRING_PAGE}, debug=True)
     )
     def test_non_string_js_raises(self):
-        from django.template import TemplateSyntaxError
-
         with self.assertRaises(TemplateSyntaxError):
             render_to_string("page.html", {"existing_script": Script("widget.js")})
 
     @override_settings(
-        TEMPLATES=locmem_templates(
-            {
-                "page.html": (
-                    "{% load include_media_tags %}"
-                    "<!DOCTYPE html><html>"
-                    "<head>{% include_media %}</head>"
-                    "<body>"
-                    "{% use_media css=existing_sheet %}"
-                    "</body></html>"
-                )
-            },
-            debug=True,
-        ),
+        TEMPLATES=locmem_templates({"page.html": ATTR_CSS_NONSTRING_PAGE}, debug=True)
     )
     def test_non_string_css_raises(self):
-        from django.template import TemplateSyntaxError
-
         with self.assertRaises(TemplateSyntaxError):
             render_to_string("page.html", {"existing_sheet": Stylesheet("print.css")})
 
 
 @override_settings(STATIC_URL="/static/")
 class ErrorHandlingTests(SimpleTestCase):
-    """Error paths: wrong page_media type, non-Media positional arg."""
-
-    @override_settings(
-        TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
-    )
+    @override_settings(TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}))
     def test_raises_when_page_media_not_media_instance(self):
         with self.assertRaises(ImproperlyConfigured):
             render_to_string("page.html", {"page_media": "not a media object"})
 
+    def test_include_media_with_args_raises(self):
+        with self.assertRaises(TemplateSyntaxError):
+            Template("{% load include_media_tags %}{% include_media arg %}")
+
+    def test_use_media_parse_errors(self):
+        bad = [
+            "{% use_media form form %}",
+            '{% use_media form css="x.css" %}',
+            '{% use_media css="x.css" js="x.js" %}',
+            '{% use_media type="module" %}',
+            "{% use_media %}",
+        ]
+        for snippet in bad:
+            with self.subTest(snippet=snippet):
+                with self.assertRaises(TemplateSyntaxError):
+                    Template("{% load include_media_tags %}" + snippet)
+
     @override_settings(
         TEMPLATES=locmem_templates(
-            {
-                "page.html": (
-                    "{% load include_media_tags %}"
-                    "<!DOCTYPE html><html>"
-                    "<head>{% include_media %}</head>"
-                    "<body>{% use_media form %}</body>"
-                    "</html>"
-                )
-            },
+            {"page.html": page("{% use_media form %}", head="{% include_media %}")},
             debug=True,
         ),
     )
     def test_non_media_positional_arg_raises(self):
-        """{% use_media form %} (forgetting .media) raises."""
-        from django.template import TemplateSyntaxError
-
         with self.assertRaises(TemplateSyntaxError):
             render_to_string("page.html", {"form": ContactForm()})
 
     @override_settings(
         TEMPLATES=locmem_templates(
-            {
-                "page.html": (
-                    "{% load include_media_tags %}"
-                    "<!DOCTYPE html><html>"
-                    "<head>{% include_media %}</head>"
-                    "<body>{% use_media form %}</body>"
-                    "</html>"
-                )
-            },
-            debug=False,
-        ),
+            {"page.html": page("{% use_media js=js_path importmap=specifier %}")},
+            debug=True,
+        )
     )
-    def test_non_media_positional_arg_raises_in_production(self):
-        """{% use_media form %} (forgetting .media) raises regardless of debug mode."""
-        from django.template import TemplateSyntaxError
-
+    def test_non_string_importmap_specifier_raises(self):
         with self.assertRaises(TemplateSyntaxError):
-            render_to_string("page.html", {"form": ContactForm()})
+            render_to_string("page.html", {"js_path": "react.js", "specifier": 42})
+
+    @override_settings(
+        TEMPLATES=locmem_templates(
+            {"page.html": page('{% use_media js=js_path importmap="react" %}')},
+            debug=True,
+        )
+    )
+    def test_non_string_importmap_js_raises(self):
+        with self.assertRaises(TemplateSyntaxError):
+            render_to_string("page.html", {"js_path": Script("react.js")})
