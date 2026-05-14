@@ -9,6 +9,7 @@ from django.template.loader import render_to_string
 from django.test import SimpleTestCase, override_settings
 
 from include_media.compat import Stylesheet
+from include_media.importmap import ImportmapScript
 
 try:
     from django.utils.csp import CONTEXT_KEY as CSP_CONTEXT_KEY
@@ -638,6 +639,357 @@ class UseMediaOutsideIncludeMediaTests(SimpleTestCase):
     def test_only_include_renders_inline_silently_in_production(self):
         html = render_to_string("page.html")
         self.assertIn("only/style.css", html)
+
+
+# ---------------------------------------------------------------------------
+# Importmap template fixtures
+# ---------------------------------------------------------------------------
+
+IMPORTMAP_PAGE = """\
+{% load include_media_tags %}
+<!DOCTYPE html>
+<html>
+<head>{% include_media %}</head>
+<body>
+{% use_media js="vendor/react.js" importmap="react" %}
+{% use_media js="vendor/lodash.js" importmap="lodash" %}
+<p>Hello</p>
+</body>
+</html>
+"""
+
+IMPORTMAP_WITH_REGULAR_ASSETS_PAGE = """\
+{% load include_media_tags %}
+<!DOCTYPE html>
+<html>
+<head>{% include_media %}</head>
+<body>
+{% use_media js="vendor/react.js" importmap="react" %}
+{% use_media css="app/style.css" %}
+{% use_media js="app/main.js" type="module" %}
+<p>Hello</p>
+</body>
+</html>
+"""
+
+IMPORTMAP_DEDUP_PAGE = """\
+{% load include_media_tags %}
+<!DOCTYPE html>
+<html>
+<head>{% include_media %}</head>
+<body>
+{% use_media js="vendor/react.js" importmap="react" %}
+{% use_media js="vendor/react-alt.js" importmap="react" %}
+<p>Hello</p>
+</body>
+</html>
+"""
+
+IMPORTMAP_CDN_PAGE = """\
+{% load include_media_tags %}
+<!DOCTYPE html>
+<html>
+<head>{% include_media %}</head>
+<body>
+{% use_media js="https://cdn.example.com/react.js" importmap="react" %}
+<p>Hello</p>
+</body>
+</html>
+"""
+
+ORPHAN_IMPORTMAP_PAGE = """\
+{% load include_media_tags %}
+<div>
+{% use_media js="vendor/react.js" importmap="react" %}
+Hello
+</div>
+"""
+
+IMPORTMAP_NONCE_PAGE = """\
+{% load include_media_tags %}
+<!DOCTYPE html>
+<html>
+<head>{% include_media %}</head>
+<body>
+{% use_media js="vendor/react.js" importmap="react" %}
+<p>Hello</p>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Importmap tests
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": IMPORTMAP_PAGE}),
+)
+class ImportmapTests(SimpleTestCase):
+    def test_importmap_tag_rendered(self):
+        html = render_to_string("page.html")
+        self.assertIn('<script type="importmap">', html)
+
+    def test_importmap_contains_specifiers_and_urls(self):
+        html = render_to_string("page.html")
+        self.assertIn('"react"', html)
+        self.assertIn('"/static/vendor/react.js"', html)
+        self.assertIn('"lodash"', html)
+        self.assertIn('"/static/vendor/lodash.js"', html)
+
+    def test_exactly_one_importmap_tag(self):
+        html = render_to_string("page.html")
+        self.assertEqual(html.count('<script type="importmap">'), 1)
+
+    def test_importmap_assets_not_rendered_as_script_tags(self):
+        html = render_to_string("page.html")
+        self.assertNotIn('src="/static/vendor/react.js"', html)
+        self.assertNotIn('src="/static/vendor/lodash.js"', html)
+
+    def test_body_content_rendered(self):
+        html = render_to_string("page.html")
+        self.assertInHTML("<p>Hello</p>", html)
+
+
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": IMPORTMAP_WITH_REGULAR_ASSETS_PAGE}),
+)
+class ImportmapWithRegularAssetsTests(SimpleTestCase):
+    def test_importmap_before_regular_assets(self):
+        html = render_to_string("page.html")
+        self.assertLess(
+            html.index('<script type="importmap">'), html.index("app/style.css")
+        )
+        self.assertLess(
+            html.index('<script type="importmap">'), html.index("app/main.js")
+        )
+
+    def test_regular_css_still_rendered(self):
+        html = render_to_string("page.html")
+        self.assertInHTML('<link href="/static/app/style.css" rel="stylesheet">', html)
+
+    def test_regular_js_still_rendered(self):
+        html = render_to_string("page.html")
+        self.assertInHTML(
+            '<script src="/static/app/main.js" type="module"></script>', html
+        )
+
+
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": IMPORTMAP_DEDUP_PAGE}),
+)
+class ImportmapDedupTests(SimpleTestCase):
+    def test_first_specifier_wins(self):
+        html = render_to_string("page.html")
+        self.assertIn('"/static/vendor/react.js"', html)
+        self.assertNotIn("react-alt", html)
+
+    def test_exactly_one_importmap_tag(self):
+        html = render_to_string("page.html")
+        self.assertEqual(html.count('<script type="importmap">'), 1)
+
+
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": IMPORTMAP_CDN_PAGE}),
+)
+class ImportmapCdnUrlTests(SimpleTestCase):
+    def test_absolute_url_used_verbatim(self):
+        html = render_to_string("page.html")
+        self.assertIn('"https://cdn.example.com/react.js"', html)
+
+    def test_static_prefix_not_prepended(self):
+        html = render_to_string("page.html")
+        self.assertNotIn("/static/https", html)
+
+
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
+)
+class NoImportmapTests(SimpleTestCase):
+    def test_no_importmap_tag_when_no_entries(self):
+        html = render_to_string("page.html")
+        self.assertNotIn('type="importmap"', html)
+
+
+class ImportmapOrphanTests(SimpleTestCase):
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": ORPHAN_IMPORTMAP_PAGE}, debug=True),
+    )
+    def test_warns_and_renders_inline_in_debug(self):
+        with self.assertWarns(UserWarning) as cm:
+            html = render_to_string("page.html")
+        self.assertIn('<script type="importmap">', html)
+        self.assertIn('"/static/vendor/react.js"', html)
+        self.assertIn("include_media", str(cm.warning))
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": ORPHAN_IMPORTMAP_PAGE}, debug=False),
+    )
+    def test_renders_inline_silently_in_production(self):
+        html = render_to_string("page.html")
+        self.assertIn('<script type="importmap">', html)
+        self.assertIn('"/static/vendor/react.js"', html)
+
+
+@unittest.skipUnless(HAS_CSP, "requires Django CSP nonce support (Django 6.1+)")
+@override_settings(
+    STATIC_URL="/static/",
+    TEMPLATES=locmem_templates({"page.html": IMPORTMAP_NONCE_PAGE}),
+)
+class ImportmapNonceTests(SimpleTestCase):
+    def test_nonce_applied_to_importmap_tag(self):
+        html = render_to_string("page.html", {CSP_CONTEXT_KEY: "testnonce"})
+        self.assertIn('<script type="importmap" nonce="testnonce">', html)
+
+    def test_no_nonce_attr_when_no_nonce_in_context(self):
+        html = render_to_string("page.html", {})
+        self.assertIn('<script type="importmap">', html)
+        self.assertNotIn("nonce=", html)
+
+
+class ImportmapScriptTests(SimpleTestCase):
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": FORM_PAGE}),
+    )
+    def test_importmap_script_in_form_media_renders_importmap_tag(self):
+        class ModuleForm(Form):
+            class Media:
+                js = [ImportmapScript("vendor/htmx.js", specifier="htmx")]
+
+        html = render_to_string("page.html", {"form": ModuleForm()})
+        self.assertIn('<script type="importmap">', html)
+        self.assertIn('"htmx"', html)
+        self.assertIn('"/static/vendor/htmx.js"', html)
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": FORM_PAGE}),
+    )
+    def test_importmap_script_not_rendered_as_script_tag(self):
+        class ModuleForm(Form):
+            class Media:
+                js = [ImportmapScript("vendor/htmx.js", specifier="htmx")]
+
+        html = render_to_string("page.html", {"form": ModuleForm()})
+        self.assertNotIn('src="/static/vendor/htmx.js"', html)
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
+    )
+    def test_importmap_script_in_page_media(self):
+        context = {
+            "page_media": Media(
+                js=[ImportmapScript("vendor/htmx.js", specifier="htmx")]
+            )
+        }
+        html = render_to_string("page.html", context)
+        self.assertIn('"htmx"', html)
+        self.assertIn('"/static/vendor/htmx.js"', html)
+        self.assertNotIn('src="/static/vendor/htmx.js"', html)
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
+    )
+    def test_regular_scripts_alongside_importmap_scripts(self):
+        context = {
+            "page_media": Media(
+                js=[
+                    ImportmapScript("vendor/htmx.js", specifier="htmx"),
+                    Script("app/main.js"),
+                ]
+            )
+        }
+        html = render_to_string("page.html", context)
+        self.assertIn('"htmx"', html)
+        self.assertInHTML('<script src="/static/app/main.js"></script>', html)
+        self.assertNotIn('src="/static/vendor/htmx.js"', html)
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
+    )
+    def test_importmap_script_dedup_by_specifier_and_path(self):
+        entry = ImportmapScript("vendor/htmx.js", specifier="htmx")
+        context = {"page_media": Media(js=[entry, entry])}
+        html = render_to_string("page.html", context)
+        self.assertEqual(html.count('"htmx"'), 1)
+
+    @override_settings(
+        STATIC_URL="/static/",
+        TEMPLATES=locmem_templates({"page.html": PLAIN_PAGE}),
+    )
+    def test_importmap_script_and_template_tag_same_specifier_first_wins(self):
+        context = {
+            "page_media": Media(
+                js=[ImportmapScript("vendor/htmx-1.js", specifier="htmx")]
+            ),
+        }
+        # Template tag also declares "htmx" — but template tags run after context,
+        # so the context entry wins.
+        from django.template import Context, Template
+
+        tmpl = Template(
+            "{% load include_media_tags %}{% include_media %}"
+            '{% use_media js="vendor/htmx-2.js" importmap="htmx" %}'
+        )
+        html = tmpl.render(Context(context))
+        self.assertIn('"htmx"', html)
+        self.assertIn('"/static/vendor/htmx-1.js"', html)
+        self.assertNotIn("htmx-2", html)
+
+
+class ImportmapParseErrorTests(SimpleTestCase):
+    @override_settings(STATIC_URL="/static/")
+    def test_importmap_without_js_raises(self):
+        from django.template import TemplateSyntaxError
+
+        with self.assertRaises(TemplateSyntaxError):
+            from django.template import Template
+
+            Template(
+                "{% load include_media_tags %}" '{% use_media importmap="react" %}'
+            )
+
+    @override_settings(STATIC_URL="/static/")
+    def test_importmap_with_css_raises(self):
+        from django.template import Template, TemplateSyntaxError
+
+        with self.assertRaises(TemplateSyntaxError):
+            Template(
+                "{% load include_media_tags %}"
+                '{% use_media css="app.css" importmap="react" %}'
+            )
+
+    @override_settings(STATIC_URL="/static/")
+    def test_importmap_with_positional_raises(self):
+        from django.template import Template, TemplateSyntaxError
+
+        with self.assertRaises(TemplateSyntaxError):
+            Template(
+                "{% load include_media_tags %}"
+                '{% use_media some_media importmap="react" %}'
+            )
+
+    @override_settings(STATIC_URL="/static/")
+    def test_importmap_with_extra_attrs_raises(self):
+        from django.template import Template, TemplateSyntaxError
+
+        with self.assertRaises(TemplateSyntaxError):
+            Template(
+                "{% load include_media_tags %}"
+                '{% use_media js="react.js" importmap="react" integrity="sha256-abc" %}'
+            )
 
 
 @override_settings(STATIC_URL="/static/")

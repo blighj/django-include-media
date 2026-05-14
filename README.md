@@ -123,6 +123,62 @@ TEMPLATES = [{
 }]
 ```
 
+### Import maps
+
+`{% include_media %}` can generate a `<script type="importmap">` tag,
+letting templates and reusable components declare their ES module specifiers
+in the same places they already declare CSS and JS assets. All entries from
+across the template hierarchy are merged into a single importmap tag, placed
+before other assets in `<head>`.
+
+**Template tag** — for one-off or inline declarations:
+
+```html
+{% use_media js="vendor/htmx.js" importmap="htmx" %}
+{% use_media js="https://cdn.example.com/lodash.js" importmap="lodash" %}
+```
+
+**`ImportmapScript`** — for reusable widgets and forms that need a module
+specifier wherever they are used:
+
+```python
+from django.forms import Form
+from include_media import ImportmapScript
+
+class DatePickerForm(Form):
+    class Media:
+        js = [
+            ImportmapScript("vendor/pikaday.js", specifier="pikaday"),
+            Script("datepicker/widget.js", type="module"),
+        ]
+```
+
+To hook up a JS build system's manifest, you could add `ImportmapScript`
+entries to `page_media` from a context processor:
+
+```python
+import json
+from pathlib import Path
+from django.forms import Media
+from include_media import ImportmapScript
+
+_manifest = json.loads((BASE_DIR / "static/dist/manifest.json").read_text())
+
+def importmap(request):
+    return {
+        "page_media": Media(js=[
+            ImportmapScript(f"/static/dist/{entry['file']}", specifier=name)
+            for name, entry in _manifest.items()
+        ])
+    }
+```
+
+**Merging and precedence** — all sources (template tags, `ImportmapScript` in
+`page_media`) are merged into one `<script type="importmap">` tag with
+first-wins semantics: `page_media` is processed before template tags, so
+view-level declarations take precedence when the same specifier appears in
+multiple places.
+
 ## Compatibility
 
 - Python 3.10+

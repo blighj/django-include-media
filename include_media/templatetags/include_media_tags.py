@@ -1,12 +1,15 @@
 import copy
+import json
 import warnings
 
 from django import template
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
 from django.forms.widgets import Script
+from django.utils.html import escape as _html_escape
 
 from include_media.compat import Stylesheet
+from include_media.importmap import ImportmapScript
 
 try:
     from django.utils.csp import CONTEXT_KEY as _CSP_CONTEXT_KEY
@@ -16,6 +19,17 @@ except ImportError:
 register = template.Library()
 
 _COLLECTOR_KEY = "_include_media_collector"
+
+
+def _render_importmap(scripts, nonce=None):
+    entries = {}
+    for s in scripts:
+        if s._importmap_specifier not in entries:
+            entries[s._importmap_specifier] = s.path
+    content = json.dumps({"imports": entries})
+    content = content.replace("</", "<\\/")
+    nonce_attr = f' nonce="{_html_escape(nonce)}"' if nonce else ""
+    return f'<script type="importmap"{nonce_attr}>{content}</script>\n'
 
 
 def _apply_nonce(media, nonce):
@@ -50,7 +64,8 @@ class IncludeMediaNode(template.Node):
         self.nodelist = nodelist
 
     def render(self, context):
-        existing = None
+        collector = _MediaCollector()
+
         for layer in reversed(context.dicts):
             if "page_media" in layer:
                 m = layer["page_media"]
@@ -59,14 +74,25 @@ class IncludeMediaNode(template.Node):
                         "page_media in template context must be a Media instance, "
                         f"got {type(m).__name__}"
                     )
-                existing = (existing + m) if existing is not None else m
-
-        collector = _MediaCollector(existing)
+                collector.add(m)
 
         with context.update({_COLLECTOR_KEY: collector}):
             body = self.nodelist.render(context)
 
-        return collector.media.render() + body
+        importmap_scripts = [
+            s for s in collector.media._js if isinstance(s, ImportmapScript)
+        ]
+        nonce = context.get(_CSP_CONTEXT_KEY)
+        importmap_html = (
+            _render_importmap(importmap_scripts, nonce) if importmap_scripts else ""
+        )
+
+        regular_js = [
+            s for s in collector.media._js if not isinstance(s, ImportmapScript)
+        ]
+        regular_media = Media(css=collector.media._css, js=regular_js)
+
+        return importmap_html + regular_media.render() + body
 
 
 @register.tag("include_media")
@@ -86,12 +112,14 @@ class UseMediaNode(template.Node):
         js_expr=None,
         attrs=None,
         csp_nonce_attr=False,
+        importmap_expr=None,
     ):
         self.media_expr = media_expr
         self.css_expr = css_expr
         self.js_expr = js_expr
         self.attrs = attrs or {}
         self.csp_nonce_attr = csp_nonce_attr
+        self.importmap_expr = importmap_expr
 
     def _build_media(self, context, nonce=None):
         if self.media_expr is not None:
@@ -132,6 +160,32 @@ class UseMediaNode(template.Node):
         collector = context.get(_COLLECTOR_KEY)
         nonce = context.get(_CSP_CONTEXT_KEY) if self.csp_nonce_attr else None
 
+        if self.importmap_expr is not None:
+            specifier = self.importmap_expr.resolve(context)
+            js_val = self.js_expr.resolve(context)
+            if not isinstance(specifier, str):
+                raise template.TemplateSyntaxError(
+                    f"{{% use_media %}} importmap= expected a string specifier, "
+                    f"got {type(specifier).__name__}."
+                )
+            if not isinstance(js_val, str):
+                raise template.TemplateSyntaxError(
+                    f"{{% use_media %}} js= expected a path string, "
+                    f"got {type(js_val).__name__}."
+                )
+            script = ImportmapScript(js_val, specifier=specifier)
+            if collector is None:
+                if context.template.engine.debug:
+                    warnings.warn(
+                        "{% use_media importmap=... %} rendered outside "
+                        "{% include_media %}: outputting inline importmap tag.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                return _render_importmap([script])
+            collector.add(Media(js=[script]))
+            return ""
+
         if collector is None:
             if context.template.engine.debug:
                 warnings.warn(
@@ -158,6 +212,7 @@ def do_use_media(parser, token):
     js_expr = None
     attrs = {}
     csp_nonce_attr = False
+    importmap_expr = None
 
     for bit in bits[1:]:
         if bit == "csp_nonce_attr":
@@ -168,6 +223,8 @@ def do_use_media(parser, token):
                 css_expr = parser.compile_filter(value)
             elif key == "js":
                 js_expr = parser.compile_filter(value)
+            elif key == "importmap":
+                importmap_expr = parser.compile_filter(value)
             else:
                 attrs[key] = parser.compile_filter(value)
         else:
@@ -177,23 +234,45 @@ def do_use_media(parser, token):
                 )
             media_expr = parser.compile_filter(bit)
 
-    if media_expr is not None and (
+    if importmap_expr is not None:
+        if media_expr is not None:
+            raise template.TemplateSyntaxError(
+                f"'{tag_name}' importmap= cannot be combined with a positional argument"
+            )
+        if css_expr is not None:
+            raise template.TemplateSyntaxError(
+                f"'{tag_name}' importmap= cannot be combined with css="
+            )
+        if js_expr is None:
+            raise template.TemplateSyntaxError(f"'{tag_name}' importmap= requires js=")
+        if attrs:
+            raise template.TemplateSyntaxError(
+                f"'{tag_name}' importmap= cannot be combined with extra attributes"
+            )
+    elif media_expr is not None and (
         css_expr is not None or js_expr is not None or attrs
     ):
         raise template.TemplateSyntaxError(
             f"'{tag_name}' cannot combine a positional argument with keyword arguments"
         )
-    if css_expr is not None and js_expr is not None:
+    elif css_expr is not None and js_expr is not None:
         raise template.TemplateSyntaxError(
             f"'{tag_name}' accepts css= or js= but not both — use separate tags"
         )
-    if attrs and css_expr is None and js_expr is None:
+    elif attrs and css_expr is None and js_expr is None:
         raise template.TemplateSyntaxError(
             f"'{tag_name}' received attributes without a css= or js= path"
         )
-    if media_expr is None and css_expr is None and js_expr is None:
+    elif (
+        media_expr is None
+        and css_expr is None
+        and js_expr is None
+        and importmap_expr is None
+    ):
         raise template.TemplateSyntaxError(
             f"'{tag_name}' requires at least one argument"
         )
 
-    return UseMediaNode(media_expr, css_expr, js_expr, attrs, csp_nonce_attr)
+    return UseMediaNode(
+        media_expr, css_expr, js_expr, attrs, csp_nonce_attr, importmap_expr
+    )
