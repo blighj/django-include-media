@@ -1,15 +1,13 @@
 import copy
-import json
 import warnings
 
 from django import template
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
 from django.forms.widgets import Script
-from django.utils.html import escape
 
 from include_media.compat import Stylesheet
-from include_media.importmap import ImportmapScript
+from include_media.importmap import ImportmapScript, render_importmap
 
 try:
     from django.utils.csp import CONTEXT_KEY as _CSP_CONTEXT_KEY
@@ -19,17 +17,6 @@ except ImportError:
 register = template.Library()
 
 _COLLECTOR_KEY = "_include_media_collector"
-
-
-def _render_importmap(scripts, nonce=None):
-    entries = {}
-    for s in scripts:
-        if s._importmap_specifier not in entries:
-            entries[s._importmap_specifier] = s.path
-    content = json.dumps({"imports": entries})
-    content = content.replace("</", "<\\/")
-    nonce_attr = f' nonce="{escape(nonce)}"' if nonce else ""
-    return f'<script type="importmap"{nonce_attr}>{content}</script>\n'
 
 
 def _apply_nonce(media, nonce):
@@ -50,8 +37,6 @@ def _apply_nonce(media, nonce):
 
 
 class _MediaCollector:
-    __slots__ = ("media",)
-
     def __init__(self, initial=None):
         self.media = initial or Media()
 
@@ -86,7 +71,7 @@ class IncludeMediaNode(template.Node):
             ).append(s)
         nonce = context.get(_CSP_CONTEXT_KEY)
         importmap_html = (
-            _render_importmap(importmap_scripts, nonce) if importmap_scripts else ""
+            render_importmap(importmap_scripts, nonce) if importmap_scripts else ""
         )
         regular_media = Media(css=collector.media._css, js=regular_js)
 
@@ -173,7 +158,7 @@ class UseMediaNode(template.Node):
                 )
             script = ImportmapScript(js_val, specifier=specifier)
             if collector is None:
-                return _render_importmap([script], nonce)
+                return render_importmap([script], nonce)
             collector.add(Media(js=[script]))
             return ""
 

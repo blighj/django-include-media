@@ -18,7 +18,6 @@ classifiers = [
     "Framework :: Django",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",
-    "Framework :: Django :: 6.1",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
@@ -39,8 +38,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "black>=22.0",
-    "isort>=5.0",
+    "coverage>=7.0",
+    "Django>=5.2",
     "flake8>=4.0",
+    "isort>=5.0",
+    "pre-commit>=3.0",
 ]
 
 [project.urls]
