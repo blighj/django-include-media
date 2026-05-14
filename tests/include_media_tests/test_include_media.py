@@ -958,23 +958,6 @@ class PostprocessorTests(SimpleTestCase):
         with self.assertRaises(ValueError, msg="boom"):
             render_to_string("page.html")
 
-    def test_cache_cleared_after_override_settings_removed(self):
-        html = render_to_string("page.html")
-        self.assertInHTML('<script src="/static/myapp/script.js"></script>', html)
-
-    @override_settings(
-        INCLUDE_MEDIA_POSTPROCESSOR=f"{MODULE_PATH}._capture_postprocessor"
-    )
-    def test_cache_invalidated_by_setting_change(self):
-        from include_media.templatetags import include_media_tags
-
-        render_to_string("page.html")
-        active = include_media_tags._get_postprocessor()
-        self.assertIs(active, _capture_postprocessor)
-
-        with self.settings(INCLUDE_MEDIA_POSTPROCESSOR=None):
-            self.assertIsNone(include_media_tags._get_postprocessor())
-
 
 @override_settings(STATIC_URL="/static/")
 class PostprocessorSystemCheckTests(SimpleTestCase):

@@ -6,14 +6,6 @@ class IncludeMediaConfig(AppConfig):
     verbose_name = "Include Media"
 
     def ready(self):
-        # setting_changed lives under django.test but fires in production too —
-        # it is the correct signal for invalidating caches when settings change.
-        from django.test.signals import setting_changed
-
-        from include_media.templatetags.include_media_tags import _on_setting_changed
-
-        setting_changed.connect(_on_setting_changed)
-
         from django.core.checks import Tags, register
 
         register(_check_postprocessor_setting, Tags.compatibility)
