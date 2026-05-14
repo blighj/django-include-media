@@ -177,6 +177,7 @@ IMPORTMAP_NONCE_PAGE = page(
 ATTR_JS_PAGE = page('{% use_media js="widget.js" type="module" %}')
 ATTR_CSS_PAGE = page('{% use_media css="print.css" media="print" %}')
 ATTR_JS_NONSTRING_PAGE = page("{% use_media js=existing_script %}")
+ATTR_CSS_NONSTRING_PAGE = page("{% use_media css=existing_sheet %}")
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +386,26 @@ class CspNonceTests(SimpleTestCase):
         )
         self.assertInHTML(
             '<link href="/static/form/form.css" rel="stylesheet" nonce="testtoken">',
+            html,
+        )
+
+    @override_settings(TEMPLATES=locmem_templates({"page.html": FORM_NONCE_PAGE}))
+    def test_nonce_applied_to_string_assets(self):
+        """Plain string assets in Media are upgraded to Script/Stylesheet with nonce."""
+
+        class LegacyForm(Form):
+            class Media:
+                css = {"all": ["legacy/style.css"]}
+                js = ["legacy/script.js"]
+
+        html = render_to_string(
+            "page.html", {CSP_CONTEXT_KEY: "testtoken", "form": LegacyForm()}
+        )
+        self.assertInHTML(
+            '<script src="/static/legacy/script.js" nonce="testtoken"></script>', html
+        )
+        self.assertInHTML(
+            '<link href="/static/legacy/style.css" rel="stylesheet" nonce="testtoken">',
             html,
         )
 
@@ -680,6 +701,13 @@ class AssetAttributesTests(SimpleTestCase):
         with self.assertRaises(TemplateSyntaxError):
             render_to_string("page.html", {"existing_script": Script("widget.js")})
 
+    @override_settings(
+        TEMPLATES=locmem_templates({"page.html": ATTR_CSS_NONSTRING_PAGE}, debug=True)
+    )
+    def test_non_string_css_raises(self):
+        with self.assertRaises(TemplateSyntaxError):
+            render_to_string("page.html", {"existing_sheet": Stylesheet("print.css")})
+
 
 @override_settings(STATIC_URL="/static/")
 class ErrorHandlingTests(SimpleTestCase):
@@ -687,6 +715,23 @@ class ErrorHandlingTests(SimpleTestCase):
     def test_raises_when_page_media_not_media_instance(self):
         with self.assertRaises(ImproperlyConfigured):
             render_to_string("page.html", {"page_media": "not a media object"})
+
+    def test_include_media_with_args_raises(self):
+        with self.assertRaises(TemplateSyntaxError):
+            Template("{% load include_media_tags %}{% include_media arg %}")
+
+    def test_use_media_parse_errors(self):
+        bad = [
+            "{% use_media form form %}",
+            '{% use_media form css="x.css" %}',
+            '{% use_media css="x.css" js="x.js" %}',
+            '{% use_media type="module" %}',
+            "{% use_media %}",
+        ]
+        for snippet in bad:
+            with self.subTest(snippet=snippet):
+                with self.assertRaises(TemplateSyntaxError):
+                    Template("{% load include_media_tags %}" + snippet)
 
     @override_settings(
         TEMPLATES=locmem_templates(
@@ -697,3 +742,23 @@ class ErrorHandlingTests(SimpleTestCase):
     def test_non_media_positional_arg_raises(self):
         with self.assertRaises(TemplateSyntaxError):
             render_to_string("page.html", {"form": ContactForm()})
+
+    @override_settings(
+        TEMPLATES=locmem_templates(
+            {"page.html": page("{% use_media js=js_path importmap=specifier %}")},
+            debug=True,
+        )
+    )
+    def test_non_string_importmap_specifier_raises(self):
+        with self.assertRaises(TemplateSyntaxError):
+            render_to_string("page.html", {"js_path": "react.js", "specifier": 42})
+
+    @override_settings(
+        TEMPLATES=locmem_templates(
+            {"page.html": page('{% use_media js=js_path importmap="react" %}')},
+            debug=True,
+        )
+    )
+    def test_non_string_importmap_js_raises(self):
+        with self.assertRaises(TemplateSyntaxError):
+            render_to_string("page.html", {"js_path": Script("react.js")})

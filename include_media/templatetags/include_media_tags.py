@@ -20,19 +20,19 @@ _COLLECTOR_KEY = "_include_media_collector"
 
 
 def _apply_nonce(media, nonce):
-    def with_nonce(asset):
-        if not hasattr(asset, "attributes"):
-            return asset
+    def with_nonce(asset, cls):
+        if isinstance(asset, str):
+            return cls(asset, nonce=nonce)
         new = copy.copy(asset)
         new.attributes = {**asset.attributes, "nonce": nonce}
         return new
 
     return Media(
         css={
-            medium: [with_nonce(a) for a in assets]
+            medium: [with_nonce(a, Stylesheet) for a in assets]
             for medium, assets in media._css.items()
         },
-        js=[with_nonce(a) for a in media._js],
+        js=[with_nonce(a, Script) for a in media._js],
     )
 
 
