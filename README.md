@@ -199,10 +199,9 @@ BSD 3-Clause License
 
 ### 0.1.0 — (Initial version)
 
-- Template tags `{% include_media %}` and `{% use_media %}` for collecting Django Media assets into `<head>`
-- Support for CSS, JavaScript, and arbitrary HTML attributes on individual assets
-- CSP nonce support via `csp_nonce_attr` flag on `{% use_media %}`
+- Provide template tags `{% include_media %}` and `{% use_media %}` for collecting Django Media assets into `<head>`
+- Supports CSS, JavaScript, and arbitrary HTML attributes on individual assets
+- CSP nonce support avialable via `csp_nonce_attr` flag on `{% use_media %}`
 - Import map support via `importmap=` keyword and `ImportmapScript`
 - Site-wide media via `page_media` context variable; merges with template-level assets
-- Multi-layer context support (e.g. middleware + view + template each contributing assets)
-- Orphan asset fallback (renders inline) with debug-mode warning
+- `{% use_media %}` falls back to rendering inline with debug-mode warning, if the include is not there.
