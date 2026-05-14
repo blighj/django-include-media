@@ -2,9 +2,11 @@ import copy
 import warnings
 
 from django import template
+from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured
 from django.forms import Media
 from django.forms.widgets import Script
+from django.utils.module_loading import import_string
 
 from include_media.compat import Stylesheet
 from include_media.importmap import ImportmapScript, render_importmap
@@ -17,6 +19,31 @@ except ImportError:
 register = template.Library()
 
 _COLLECTOR_KEY = "_include_media_collector"
+
+_UNSET = object()
+_postprocessor_cache = _UNSET
+
+
+def _get_postprocessor():
+    """
+    Return the configured postprocessor callable, or ``None``.
+    """
+    global _postprocessor_cache
+    if _postprocessor_cache is _UNSET:
+        path = getattr(django_settings, "INCLUDE_MEDIA_POSTPROCESSOR", None)
+        _postprocessor_cache = import_string(path) if path else None
+    return _postprocessor_cache
+
+
+def _on_setting_changed(*, setting, **kwargs):
+    """
+    Invalidate the cache by Django's ``setting_changed`` signal so that
+    ``@override_settings`` works correctly in tests.
+    """
+    global _postprocessor_cache
+    if setting == "INCLUDE_MEDIA_POSTPROCESSOR":
+        _postprocessor_cache = _UNSET
+    # Signal connection is established in IncludeMediaConfig.ready().
 
 
 def _apply_nonce(media, nonce):
@@ -74,8 +101,18 @@ class IncludeMediaNode(template.Node):
             render_importmap(importmap_scripts, nonce) if importmap_scripts else ""
         )
         regular_media = Media(css=collector.media._css, js=regular_js)
+        assets_html = importmap_html + regular_media.render()
 
-        return importmap_html + regular_media.render() + body
+        postprocessor = _get_postprocessor()
+        if postprocessor is not None:
+            assets_html = postprocessor(assets_html, context)
+            if not isinstance(assets_html, str):
+                raise ImproperlyConfigured(
+                    f"INCLUDE_MEDIA_POSTPROCESSOR must return a string, "
+                    f"got {type(assets_html).__name__}"
+                )
+
+        return assets_html + body
 
 
 @register.tag("include_media")
