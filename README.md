@@ -200,7 +200,8 @@ BSD 3-Clause License
 ### 0.1.0 — (Initial version)
 
 - Provide template tags `{% include_media %}` and `{% use_media %}` for collecting Django Media assets into `<head>`
-- Supports CSS, JavaScript, and arbitrary HTML attributes on individual assets
+- Supports CSS `<link rel="stylesheet">` and JavaScript `<script>` tags and setting any attributes.
+- Sets correct path with `django.contrib.staticfiles` if relevant.
 - CSP nonce support avialable via `csp_nonce_attr` flag on `{% use_media %}`
 - Import map support via `importmap=` keyword and `ImportmapScript`
 - Site-wide media via `page_media` context variable; merges with template-level assets
