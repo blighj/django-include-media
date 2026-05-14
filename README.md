@@ -197,7 +197,7 @@ BSD 3-Clause License
 
 ## Changelog
 
-### 0.1.0 — unreleased
+### 0.1.0 — (Initial version)
 
 - Template tags `{% include_media %}` and `{% use_media %}` for collecting Django Media assets into `<head>`
 - Support for CSS, JavaScript, and arbitrary HTML attributes on individual assets
