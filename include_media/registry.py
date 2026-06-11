@@ -12,7 +12,8 @@ def register(media):
     _registered.append(media)
 
 
-def clear():
+def _clear():
+    """For test teardown only. Not part of the public API."""
     _registered.clear()
 
 
