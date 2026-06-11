@@ -45,7 +45,7 @@ assets to the page.
 ### Component and template assets
 
 Declare assets inline with `{% use_media %}`. Assets are deduplicated by
-object identity, including the same component twice will only renders its
+object identity, including the same component twice only renders its
 assets once:
 
 ```html
@@ -271,7 +271,7 @@ BSD 3-Clause License
 - Provide template tags `{% include_media %}` and `{% use_media %}` for collecting Django Media assets into `<head>`
 - Supports CSS `<link rel="stylesheet">` and JavaScript `<script>` tags and setting any attributes.
 - Sets correct path with `django.contrib.staticfiles` if relevant.
-- CSP nonce support avialable via `csp_nonce_attr` flag on `{% use_media %}`
+- CSP nonce support available via `csp_nonce_attr` flag on `{% use_media %}`
 - Import map support via `importmap=` keyword and `ImportmapScript`
 - Site-wide media via `page_media` context variable; merges with template-level assets
 - `{% use_media %}` falls back to rendering inline with debug-mode warning, if the include is not there.

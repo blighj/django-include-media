@@ -3,14 +3,19 @@ import json
 from django.forms.widgets import Script
 from django.utils.html import escape
 
+_json_script_escapes = {
+    ord(">"): "\\u003e",
+    ord("<"): "\\u003c",
+    ord("&"): "\\u0026",
+}
+
 
 def render_importmap(scripts, nonce=None):
     entries = {}
     for s in scripts:
         if s._importmap_specifier not in entries:
             entries[s._importmap_specifier] = s.path
-    content = json.dumps({"imports": entries})
-    content = content.replace("</", "<\\/")
+    content = json.dumps({"imports": entries}).translate(_json_script_escapes)
     nonce_attr = f' nonce="{escape(nonce)}"' if nonce else ""
     return f'<script type="importmap"{nonce_attr}>{content}</script>\n'
 
@@ -40,10 +45,17 @@ class ImportmapScript(Script):
 
     def __eq__(self, other):
         return (
-            type(self) is type(other)
+            self.__class__ is other.__class__
             and self._path == other._path
             and self._importmap_specifier == other._importmap_specifier
+            and self.attributes == other.attributes
         )
 
     def __hash__(self):
-        return hash((type(self), self._path, self._importmap_specifier))
+        if self.attributes:
+            return (
+                hash(self._path)
+                ^ hash(self._importmap_specifier)
+                ^ hash(frozenset(self.attributes.items()))
+            )
+        return hash(self._path) ^ hash(self._importmap_specifier)

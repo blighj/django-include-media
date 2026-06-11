@@ -22,16 +22,16 @@ _COLLECTOR_KEY = "_include_media_collector"
 
 
 def _apply_nonce(media, nonce):
-    def with_nonce(asset, cls):
+    def with_nonce(asset, cls, **kwargs):
         if isinstance(asset, str):
-            return cls(asset, nonce=nonce)
+            return cls(asset, nonce=nonce, **kwargs)
         new = copy.copy(asset)
         new.attributes = {**asset.attributes, "nonce": nonce}
         return new
 
     return Media(
         css={
-            medium: [with_nonce(a, Stylesheet) for a in assets]
+            medium: [with_nonce(a, Stylesheet, media=medium) for a in assets]
             for medium, assets in media._css.items()
         },
         js=[with_nonce(a, Script) for a in media._js],
@@ -120,7 +120,7 @@ class UseMediaNode(template.Node):
         if self.media_expr is not None:
             media = self.media_expr.resolve(context)
             if not isinstance(media, Media):
-                raise template.TemplateSyntaxError(
+                raise TypeError(
                     f"{{% use_media %}} expected a Media object, got "
                     f"{type(media).__name__}. Did you forget .media?"
                 )
@@ -134,7 +134,7 @@ class UseMediaNode(template.Node):
         if self.css_expr is not None:
             css_val = self.css_expr.resolve(context)
             if not isinstance(css_val, str):
-                raise template.TemplateSyntaxError(
+                raise TypeError(
                     f"{{% use_media %}} css= expected a path string, "
                     f"got {type(css_val).__name__}."
                 )
@@ -143,7 +143,7 @@ class UseMediaNode(template.Node):
         if self.js_expr is not None:
             js_val = self.js_expr.resolve(context)
             if not isinstance(js_val, str):
-                raise template.TemplateSyntaxError(
+                raise TypeError(
                     f"{{% use_media %}} js= expected a path string, "
                     f"got {type(js_val).__name__}."
                 )
@@ -159,12 +159,12 @@ class UseMediaNode(template.Node):
             specifier = self.importmap_expr.resolve(context)
             js_val = self.js_expr.resolve(context)
             if not isinstance(specifier, str):
-                raise template.TemplateSyntaxError(
+                raise TypeError(
                     f"{{% use_media %}} importmap= expected a string specifier, "
                     f"got {type(specifier).__name__}."
                 )
             if not isinstance(js_val, str):
-                raise template.TemplateSyntaxError(
+                raise TypeError(
                     f"{{% use_media %}} js= expected a path string, "
                     f"got {type(js_val).__name__}."
                 )

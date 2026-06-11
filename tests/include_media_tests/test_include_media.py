@@ -10,11 +10,11 @@ from django.template import Context, Template, TemplateSyntaxError
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
-from include_media import clear, register
+from include_media import register
 from include_media.compat import Stylesheet
 from include_media.context_processors import registered_media
-from include_media.importmap import ImportmapScript
-from include_media.registry import _get_registered_media
+from include_media.importmap import ImportmapScript, render_importmap
+from include_media.registry import _clear, _get_registered_media
 
 try:
     from django.utils.csp import CONTEXT_KEY as CSP_CONTEXT_KEY
@@ -408,7 +408,8 @@ class CspNonceTests(SimpleTestCase):
             '<script src="/static/legacy/script.js" nonce="testtoken"></script>', html
         )
         self.assertInHTML(
-            '<link href="/static/legacy/style.css" rel="stylesheet" nonce="testtoken">',
+            '<link href="/static/legacy/style.css" rel="stylesheet"'
+            'media="all" nonce="testtoken">',
             html,
         )
 
@@ -666,6 +667,26 @@ class ImportmapScriptTests(SimpleTestCase):
         self.assertNotIn("htmx-2", html)
 
 
+@override_settings(STATIC_URL="/static/")
+class ImportmapJsonEscapingTests(SimpleTestCase):
+    def test_angle_brackets_and_ampersand_escaped(self):
+        s = ImportmapScript("vendor/a.js", specifier="a<b>&<c")
+        html = render_importmap([s])
+        self.assertNotIn("<b>", html)
+        self.assertNotIn("&<", html)
+        self.assertIn("\\u003c", html)
+        self.assertIn("\\u003e", html)
+        self.assertIn("\\u0026", html)
+
+    def test_script_breakout_blocked(self):
+        s = ImportmapScript("vendor/a.js", specifier="</script><script>alert(1)")
+        html = render_importmap([s])
+        # Exactly one </script> — the legitimate closing tag, no injected breakout.
+        self.assertEqual(html.count("</script>"), 1)
+        # No raw <script> injection inside the JSON body.
+        self.assertEqual(html.count("<script>"), 0)
+
+
 class ImportmapParseErrorTests(SimpleTestCase):
     @override_settings(STATIC_URL="/static/")
     def test_importmap_parse_errors(self):
@@ -701,14 +722,14 @@ class AssetAttributesTests(SimpleTestCase):
         TEMPLATES=locmem_templates({"page.html": ATTR_JS_NONSTRING_PAGE}, debug=True)
     )
     def test_non_string_js_raises(self):
-        with self.assertRaises(TemplateSyntaxError):
+        with self.assertRaises(TypeError):
             render_to_string("page.html", {"existing_script": Script("widget.js")})
 
     @override_settings(
         TEMPLATES=locmem_templates({"page.html": ATTR_CSS_NONSTRING_PAGE}, debug=True)
     )
     def test_non_string_css_raises(self):
-        with self.assertRaises(TemplateSyntaxError):
+        with self.assertRaises(TypeError):
             render_to_string("page.html", {"existing_sheet": Stylesheet("print.css")})
 
 
@@ -743,7 +764,7 @@ class ErrorHandlingTests(SimpleTestCase):
         ),
     )
     def test_non_media_positional_arg_raises(self):
-        with self.assertRaises(TemplateSyntaxError):
+        with self.assertRaises(TypeError):
             render_to_string("page.html", {"form": ContactForm()})
 
     @override_settings(
@@ -753,7 +774,7 @@ class ErrorHandlingTests(SimpleTestCase):
         )
     )
     def test_non_string_importmap_specifier_raises(self):
-        with self.assertRaises(TemplateSyntaxError):
+        with self.assertRaises(TypeError):
             render_to_string("page.html", {"js_path": "react.js", "specifier": 42})
 
     @override_settings(
@@ -763,7 +784,7 @@ class ErrorHandlingTests(SimpleTestCase):
         )
     )
     def test_non_string_importmap_js_raises(self):
-        with self.assertRaises(TemplateSyntaxError):
+        with self.assertRaises(TypeError):
             render_to_string("page.html", {"js_path": Script("react.js")})
 
 
@@ -774,10 +795,10 @@ class ErrorHandlingTests(SimpleTestCase):
 
 class RegisterTests(SimpleTestCase):
     def setUp(self):
-        clear()
+        _clear()
 
     def tearDown(self):
-        clear()
+        _clear()
 
     def test_register_valid_media(self):
         register(Media(js=[Script("myapp/base.js")]))
@@ -813,17 +834,17 @@ class RegisterTests(SimpleTestCase):
 
     def test_clear_empties_registry(self):
         register(Media(js=[Script("a.js")]))
-        clear()
+        _clear()
         self.assertEqual(_get_registered_media()._js, [])
 
 
 class RegisteredMediaContextProcessorTests(SimpleTestCase):
     def setUp(self):
-        clear()
+        _clear()
         self.request = RequestFactory().get("/")
 
     def tearDown(self):
-        clear()
+        _clear()
 
     def test_returns_empty_dict_when_nothing_registered(self):
         self.assertEqual(registered_media(self.request), {})
@@ -867,8 +888,8 @@ class RegisteredMediaContextProcessorTests(SimpleTestCase):
         register(Media(js=[Script("app/base.js")]))
         cp_ctx = registered_media(self.request)
         tmpl = Template("{% load include_media_tags %}{% include_media %}<body></body>")
-        ctx = Context(cp_ctx)
-        ctx.update({"page_media": Media(css={"all": [Stylesheet("view/view.css")]})})
+        ctx = Context({"page_media": Media(css={"all": [Stylesheet("view/view.css")]})})
+        ctx.update(cp_ctx)
         html = tmpl.render(ctx)
         self.assertInHTML('<script src="/static/app/base.js"></script>', html)
         self.assertInHTML('<link href="/static/view/view.css" rel="stylesheet">', html)
